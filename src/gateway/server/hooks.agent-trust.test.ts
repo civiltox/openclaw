@@ -28,6 +28,13 @@ const resolveChannelDefaultAccountIdMock = vi.fn(() => "default");
 
 vi.mock("../../infra/system-events.js", () => ({
   enqueueSystemEvent: enqueueSystemEventMock,
+  resolveSystemEventQueueKey: ({
+    sessionKey,
+    agentId,
+  }: {
+    sessionKey: string;
+    agentId?: string;
+  }) => (sessionKey === "global" && agentId ? `agent:${agentId}:global` : sessionKey),
 }));
 vi.mock("../../infra/heartbeat-wake.js", () => ({
   requestHeartbeat: requestHeartbeatMock,
@@ -59,10 +66,12 @@ vi.mock("../../config/io.js", () => ({
 }));
 
 let capturedDispatchAgentHook: ((...args: unknown[]) => unknown) | undefined;
+let capturedDispatchWakeHook: ((...args: unknown[]) => unknown) | undefined;
 
 vi.mock("./hooks-request-handler.js", () => ({
   createHooksRequestHandler: vi.fn((opts: Record<string, unknown>) => {
     capturedDispatchAgentHook = opts.dispatchAgentHook as typeof capturedDispatchAgentHook;
+    capturedDispatchWakeHook = opts.dispatchWakeHook as typeof capturedDispatchWakeHook;
     return vi.fn();
   }),
 }));
@@ -98,6 +107,7 @@ function buildAgentPayload(name: string, agentId?: string) {
     message: "test message",
     name,
     agentId,
+    effectiveAgentId: agentId ?? "main",
     idempotencyKey: undefined,
     wakeMode: "now" as const,
     sessionKey: "session-1",
@@ -116,6 +126,13 @@ function buildAgentPayload(name: string, agentId?: string) {
 
 function dispatchAgentHook(payload: unknown): unknown {
   return resolveDispatchAgentHook()(payload);
+}
+
+function dispatchWakeHook(payload: unknown, agentId: string): unknown {
+  if (!capturedDispatchWakeHook) {
+    throw new Error("dispatchWakeHook missing");
+  }
+  return capturedDispatchWakeHook(payload, agentId);
 }
 
 function resolveDispatchAgentHook(): (...args: unknown[]) => unknown {
@@ -178,6 +195,7 @@ describe("dispatchAgentHook trust handling", () => {
     resolveOutboundChannelPluginMock.mockReturnValue({ id: "telegram" });
     resolveChannelDefaultAccountIdMock.mockReturnValue("default");
     capturedDispatchAgentHook = undefined;
+    capturedDispatchWakeHook = undefined;
     createGatewayHooksRequestHandler(buildMinimalParams());
   });
 
@@ -300,6 +318,49 @@ describe("dispatchAgentHook trust handling", () => {
       runId: expect.any(String),
     });
     expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps global wake events and heartbeat requests on the same session key", () => {
+    loadConfigMock.mockReturnValue({
+      ...mainRosterConfig(),
+      session: { scope: "global" },
+    });
+
+    dispatchWakeHook({ text: "wake globally", mode: "now" }, "main");
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith("wake globally", {
+      sessionKey: "agent:main:global",
+    });
+    expect(requestHeartbeatMock).toHaveBeenCalledWith({
+      source: "hook",
+      intent: "immediate",
+      reason: "hook:wake",
+      agentId: "main",
+      sessionKey: "global",
+    });
+  });
+
+  it("keeps global hook failures and heartbeat requests on the same session key", async () => {
+    loadConfigMock.mockReturnValue({
+      ...mainRosterConfig(),
+      session: { scope: "global" },
+    });
+    runCronIsolatedAgentTurnMock.mockRejectedValueOnce(new Error("agent exploded"));
+
+    dispatchAgentHook(buildAgentPayload("Global failure"));
+
+    await waitForFast(() =>
+      expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+        "Hook Global failure (error): Error: agent exploded",
+        { sessionKey: "agent:main:global" },
+      ),
+    );
+    expect(requestHeartbeatMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        sessionKey: "global",
+      }),
+    );
   });
 
   it("retains detached agent work after the hook request releases admission", async () => {
@@ -494,7 +555,7 @@ describe("dispatchAgentHook trust handling", () => {
     await waitForFast(() =>
       expect(enqueueSystemEventMock).toHaveBeenCalledWith(
         "Hook Config (error): Error: config exploded",
-        { sessionKey: "main-session" },
+        { sessionKey: "agent:main:main" },
       ),
     );
     await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
