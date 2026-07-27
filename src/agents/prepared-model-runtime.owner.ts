@@ -24,6 +24,7 @@ import type {
   PreparedModelRuntimeReplacement,
   PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.types.js";
+import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 
 export { startSerializedSnapshotBuildBatch };
 export type {
@@ -152,7 +153,7 @@ export function normalizePreparedModelRuntimeInput(
     ...rest
   } = input;
   const inheritedAuthDir = normalizeOptionalDir(
-    input.inheritedAuthDir ?? resolveAgentDir(input.config, "main", input.env),
+    input.inheritedAuthDir ?? resolveLegacyInheritedAuthDir(input.config, input.env),
   );
   const workspaceDir = normalizeOptionalDir(input.workspaceDir);
   const env = input.env ? Object.freeze({ ...input.env }) : undefined;
@@ -255,7 +256,7 @@ export function listConfiguredOwnerInputs(
   defaultWorkspaceDir?: string,
 ): PreparedModelRuntimeInput[] {
   const soleAgentId = tryResolveSoleAgentId(config);
-  const inheritedAuthDir = resolveAgentDir(config, "main");
+  const inheritedAuthDir = resolveLegacyInheritedAuthDir(config);
   return listAgentIds(config).map((agentId) => {
     const agentDir = resolveAgentDir(config, agentId);
     const preserveWorkspaceDirOnRefresh = agentId === soleAgentId && defaultWorkspaceDir;
