@@ -28,6 +28,8 @@ const resolveChannelDefaultAccountIdMock = vi.fn(() => "default");
 
 vi.mock("../../infra/system-events.js", () => ({
   enqueueSystemEvent: enqueueSystemEventMock,
+}));
+vi.mock("../../infra/system-event-queue-key.js", () => ({
   resolveSystemEventQueueKey: ({
     sessionKey,
     agentId,
