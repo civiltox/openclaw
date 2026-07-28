@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./model-catalog.js", () => ({
   buildPreparedModelCatalogSnapshot: (...args: unknown[]) =>
-    mocks.buildPreparedModelCatalogSnapshot(...args),
+    Reflect.apply(mocks.buildPreparedModelCatalogSnapshot, undefined, args),
 }));
 
 vi.mock("./agent-auth-discovery.js", () => ({
@@ -109,7 +109,8 @@ vi.mock("./model-discovery-context.js", () => ({
 }));
 
 vi.mock("./models-config.js", () => ({
-  ensureOpenClawModelsJson: (...args: unknown[]) => mocks.ensureOpenClawModelsJson(...args),
+  ensureOpenClawModelsJson: (...args: unknown[]) =>
+    Reflect.apply(mocks.ensureOpenClawModelsJson, undefined, args),
   planOpenClawModelsJsonSource: (...args: unknown[]) => mocks.planOpenClawModelsJsonSource(...args),
 }));
 
@@ -986,10 +987,7 @@ describe("prepared model runtime snapshots", () => {
     const agentDir = "/tmp/prepared-model-runtime-implicit-inheritance";
     await publishPreparedModelRuntimeSnapshot({ config, agentDir });
 
-    mocks.mutationListener?.({
-      agentDir: "/tmp/unused-agent",
-      affectsInheritedStores: false,
-    });
+    mocks.mutationListener?.({ agentDir: "/tmp/unused-agent", affectsInheritedStores: false });
 
     await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
     expect(mocks.discoverAuthStorage).toHaveBeenLastCalledWith(
