@@ -621,6 +621,7 @@ export function buildGatewayCronService(params: {
   };
 
   const cron = new CronService({
+    env,
     storePath,
     cronEnabled,
     cronConfig: params.cfg.cron,
@@ -1213,7 +1214,6 @@ export function buildGatewayCronService(params: {
     // update must leave the live source and its buffered events untouched.
     const validated = structuredClone(current);
     applyJobPatch(validated, patch, {
-      defaultAgentId: cron.getDefaultAgentId(),
       scheduleValidationNowMs: nowMs,
       cronConfig: params.cfg.cron,
     });
