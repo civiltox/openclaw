@@ -730,6 +730,11 @@
     "webSearch.baseUrl": {
       "label": "Gemini Search Base URL",
       "help": "Optional Gemini API base URL for web search grounding proxies."
+    },
+    "webSearch.headers": {
+      "label": "Gemini Search Headers",
+      "help": "Optional non-secret headers merged into Gemini web search requests, for gateways that need routing metadata. Not a credential store: use webSearch.apiKey for credentials.",
+      "sensitive": true
     }
   },
   "contracts": {
@@ -775,6 +780,12 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       }

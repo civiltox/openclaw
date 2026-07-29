@@ -97,6 +97,10 @@ function withGoogleModelProviderFallbacks(
   if (provider.baseUrl !== undefined) {
     gemini.providerBaseUrl = provider.baseUrl;
   }
+  // models.providers.google.headers is deliberately NOT forwarded here. Those
+  // headers are scoped to the provider's own baseUrl and may carry credentials,
+  // while webSearch.baseUrl can point somewhere else entirely, so forwarding them
+  // would send provider credentials to a different origin.
   Object.defineProperty(mergedSearchConfig, "gemini", {
     value: gemini,
     enumerable: geminiDescriptor?.enumerable ?? false,

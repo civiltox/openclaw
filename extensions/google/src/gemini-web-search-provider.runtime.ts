@@ -1,4 +1,6 @@
 // Google provider module implements model/runtime integration.
+import { createHash } from "node:crypto";
+import { logInfo } from "openclaw/plugin-sdk/logging-core";
 import {
   createProviderHttpError,
   formatProviderHttpErrorMessage,
@@ -65,6 +67,188 @@ type GeminiGroundingResponse = {
 
 function throwMalformedGeminiResponse(): never {
   throw new Error("Gemini API error: malformed JSON response");
+}
+
+// RFC 9110 field-name token. Validated at request time rather than in the manifest
+// schema: plugin config validation is fail-closed at load, so rejecting a name there
+// would disable every Google capability instead of just the bad header.
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+
+// Framing and hop-by-hop names are syntactically valid but break the request:
+// undici rejects Transfer-Encoding outright and honours Content-Length, which
+// truncates the JSON body. JSON Schema cannot express a case-insensitive name
+// exclusion, so these are filtered here rather than at config validation.
+const REJECTED_REQUEST_HEADER_NAMES = new Set([
+  "connection",
+  "content-encoding",
+  "content-length",
+  "host",
+  "keep-alive",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+// Names the Gemini request owns. Declared statically rather than derived from
+// resolveGoogleApiClientHeaders: that helper returns {} for non-Google endpoints, so
+// deriving it would leave x-goog-api-client unreserved on exactly the gateway
+// deployments this feature exists for, contradicting the documented reservation.
+const PROVIDER_OWNED_HEADER_NAMES = new Set([
+  "content-type",
+  "x-goog-api-client",
+  "x-goog-api-key",
+]);
+
+// Header values are ByteStrings: a code unit above U+00FF (em dash, curly quote,
+// CJK) throws from the Headers constructor at request time, as do CR/LF/NUL.
+// The accepted set deliberately stops short of RFC 9110 obs-text by excluding the
+// C1 control range 0x80-0x9f, which no legitimate routing header needs.
+const HTTP_HEADER_VALUE_TAB = 0x09;
+const HTTP_HEADER_VALUE_SPACE = 0x20;
+const HTTP_HEADER_VALUE_VCHAR_MIN = 0x21;
+const HTTP_HEADER_VALUE_VCHAR_MAX = 0x7e;
+const HTTP_HEADER_VALUE_OBS_TEXT_MIN = 0xa0;
+const HTTP_HEADER_VALUE_OBS_TEXT_MAX = 0xff;
+// Config env substitution warns and preserves the placeholder when a variable is
+// unset, so an unresolved reference would otherwise be sent verbatim.
+const UNRESOLVED_ENV_PLACEHOLDER_PATTERN = /\$\{[A-Z_][A-Z0-9_]*\}/u;
+
+function isHttpHeaderValue(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isFieldVchar =
+      (code >= HTTP_HEADER_VALUE_VCHAR_MIN && code <= HTTP_HEADER_VALUE_VCHAR_MAX) ||
+      (code >= HTTP_HEADER_VALUE_OBS_TEXT_MIN && code <= HTTP_HEADER_VALUE_OBS_TEXT_MAX);
+    if (!isFieldVchar && code !== HTTP_HEADER_VALUE_TAB && code !== HTTP_HEADER_VALUE_SPACE) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function dropGeminiHeader(path: string, name: string, reason: string): void {
+  // Operators must be able to tell that a routing header never reached the wire;
+  // a silently dropped header looks identical to a misrouted backend. The name comes
+  // from a config key and can contain newlines, so quote it to keep a forged value
+  // from being read as additional gateway log lines.
+  logInfo(`web_search (gemini): ignoring header ${JSON.stringify(name)} from ${path} (${reason})`);
+}
+
+/**
+ * Resolves operator headers from `webSearch.headers`. Every rejection happens here
+ * rather than at request build time so the cache key matches the bytes actually
+ * sent. Names are lower-cased to collapse case-variant duplicates, which `Headers`
+ * would otherwise comma-join into one malformed value.
+ *
+ * Values are plain strings only. Secret references are deliberately unsupported:
+ * this path is not a registered secret target, so a ref cannot resolve.
+ */
+function resolveGeminiWebSearchHeaders(params: {
+  gemini?: GeminiConfig;
+}): Record<string, string> | undefined {
+  const raw = params.gemini?.headers;
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const configPath = "plugins.entries.google.config.webSearch.headers";
+  const resolved = new Map<string, string>();
+  for (const [rawName, rawValue] of Object.entries(raw)) {
+    const name = rawName.trim().toLowerCase();
+    if (!HTTP_HEADER_NAME_PATTERN.test(name)) {
+      dropGeminiHeader(configPath, rawName, "name is not a valid HTTP token");
+      continue;
+    }
+    if (REJECTED_REQUEST_HEADER_NAMES.has(name)) {
+      dropGeminiHeader(configPath, rawName, "framing and hop-by-hop headers are not allowed");
+      continue;
+    }
+    if (PROVIDER_OWNED_HEADER_NAMES.has(name)) {
+      dropGeminiHeader(configPath, rawName, "reserved for the Gemini request contract");
+      continue;
+    }
+    if (typeof rawValue !== "string") {
+      dropGeminiHeader(configPath, rawName, "value must be a string");
+      continue;
+    }
+    const value = rawValue.trim();
+    if (!value) {
+      dropGeminiHeader(configPath, rawName, "value is empty");
+      continue;
+    }
+    if (UNRESOLVED_ENV_PLACEHOLDER_PATTERN.test(value)) {
+      dropGeminiHeader(configPath, rawName, "value still contains an unresolved ${VAR}");
+      continue;
+    }
+    if (!isHttpHeaderValue(value)) {
+      dropGeminiHeader(
+        configPath,
+        rawName,
+        "value has characters outside the HTTP field-value set",
+      );
+      continue;
+    }
+    if (resolved.has(name)) {
+      // Case-variant duplicates collapse to one value; say so rather than letting the
+      // losing entry disappear without a log like every other rejection.
+      dropGeminiHeader(configPath, rawName, `duplicate of ${name} after case folding`);
+    }
+    resolved.set(name, value);
+  }
+  return resolved.size > 0 ? Object.fromEntries(resolved) : undefined;
+}
+
+/**
+ * Secret-free cache discriminator for operator headers. Search cache keys live in a
+ * process-wide map and routing headers can point the same baseUrl at a different
+ * backend, so the header set must partition the cache without storing its values.
+ * Sorting is load-bearing only here, so that two configs declaring the same headers
+ * in a different order share a cache entry.
+ */
+function resolveGeminiWebSearchHeadersCacheKey(
+  headers?: Record<string, string>,
+): string | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  const sorted = Object.entries(headers).toSorted(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+  return createHash("sha256").update(JSON.stringify(sorted)).digest("hex").slice(0, 16);
+}
+
+/** Headers the Gemini request owns; operator config may not supply or override these. */
+function resolveProviderOwnedGeminiHeaders(params: {
+  apiKey: string;
+  baseUrl: string;
+}): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    "x-goog-api-key": params.apiKey,
+    ...resolveGoogleApiClientHeaders({
+      baseUrl: params.baseUrl,
+      api: "google-generative-ai",
+      capability: "other",
+      transport: "http",
+    }),
+  };
+}
+
+/**
+ * Merges already-validated operator headers with provider-owned ones. Reserved names
+ * are filtered during resolution, so `set` here only establishes the request
+ * contract rather than resolving collisions.
+ */
+function buildGeminiRequestHeaders(params: {
+  providerOwned: Record<string, string>;
+  operatorHeaders?: Record<string, string>;
+}): Headers {
+  const headers = new Headers(params.operatorHeaders);
+  for (const [name, value] of Object.entries(params.providerOwned)) {
+    headers.set(name, value);
+  }
+  return headers;
 }
 
 const GEMINI_FRESHNESS_DAYS: Record<GeminiFreshness, number> = {
@@ -186,6 +370,8 @@ async function runGeminiSearch(params: {
   timeoutSeconds: number;
   signal?: AbortSignal;
   timeRangeFilter?: GeminiTimeRangeFilter;
+  headers?: Record<string, string>;
+  providerOwnedHeaders: Record<string, string>;
 }): Promise<{ content: string; citations: Array<{ url: string; title?: string }> }> {
   const endpoint = `${params.baseUrl}/models/${params.model}:generateContent`;
   const googleSearch =
@@ -198,16 +384,10 @@ async function runGeminiSearch(params: {
       signal: params.signal,
       init: {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": params.apiKey,
-          ...resolveGoogleApiClientHeaders({
-            baseUrl: params.baseUrl,
-            api: "google-generative-ai",
-            capability: "other",
-            transport: "http",
-          }),
-        },
+        headers: buildGeminiRequestHeaders({
+          providerOwned: params.providerOwnedHeaders,
+          operatorHeaders: params.headers,
+        }),
         body: JSON.stringify({
           contents: [{ parts: [{ text: params.query }] }],
           tools: [{ google_search: googleSearch }],
@@ -338,6 +518,8 @@ export async function executeGeminiSearch(
     undefined;
   const model = resolveGeminiModel(geminiConfig);
   const baseUrl = resolveGeminiBaseUrl(geminiConfig);
+  const providerOwnedHeaders = resolveProviderOwnedGeminiHeaders({ apiKey, baseUrl });
+  const headers = resolveGeminiWebSearchHeaders({ gemini: geminiConfig });
   const cacheKey = buildSearchCacheKey([
     "gemini",
     query,
@@ -347,6 +529,7 @@ export async function executeGeminiSearch(
     timeRange.freshness,
     timeRange.timeRangeFilter?.startTime,
     timeRange.timeRangeFilter?.endTime,
+    resolveGeminiWebSearchHeadersCacheKey(headers),
   ]);
   const cached = readCachedSearchPayload(cacheKey);
   if (cached) {
@@ -362,6 +545,8 @@ export async function executeGeminiSearch(
     timeoutSeconds: resolveSearchTimeoutSeconds(searchConfig),
     signal: context?.signal,
     timeRangeFilter: timeRange.timeRangeFilter,
+    headers,
+    providerOwnedHeaders,
   });
   const payload = {
     query,

@@ -49,9 +49,14 @@ function requireFirstGeminiFetchCall(
   return call as [RequestInfo | URL | undefined, RequestInit | undefined];
 }
 
+/** Reads request headers as a plain record; the provider passes a `Headers` instance. */
+function readInitHeaders(init: RequestInit | undefined): Record<string, string> {
+  return Object.fromEntries(new Headers(init?.headers).entries());
+}
+
 function getFetchHeaders(mockFetch: ReturnType<typeof installGeminiFetch>): Record<string, string> {
   const [, init] = requireFirstGeminiFetchCall(mockFetch);
-  return (init?.headers as Record<string, string> | undefined) ?? {};
+  return readInitHeaders(init);
 }
 
 function getGeminiFetchUrl(mockFetch: ReturnType<typeof installGeminiFetch>): string | undefined {
@@ -63,6 +68,23 @@ function getGeminiFetchUrl(mockFetch: ReturnType<typeof installGeminiFetch>): st
     return input.toString();
   }
   return input?.url;
+}
+
+/**
+ * Request headers for each `:generateContent` call, ignoring the citation-redirect
+ * HEAD requests that also land on the mock.
+ */
+function getGeminiSearchCallHeaders(
+  mockFetch: ReturnType<typeof installGeminiFetch>,
+): Array<Record<string, string>> {
+  return mockFetch.mock.calls
+    .map((call) => call as [RequestInfo | URL | undefined, RequestInit | undefined])
+    .filter(([input]) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input?.url;
+      return (url ?? "").includes(":generateContent");
+    })
+    .map(([, init]) => readInitHeaders(init));
 }
 
 function parseGeminiFetchBody(mockFetch: ReturnType<typeof installGeminiFetch>): {
@@ -140,6 +162,249 @@ describe("google web search provider", () => {
     expect(getGeminiFetchUrl(mockFetch)).toBe(
       "https://generativelanguage.googleapis.com/proxy/v1beta/models/gemini-2.5-flash:generateContent",
     );
+  });
+
+  it("merges configured webSearch.headers into Gemini requests", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  apiKey: "AIza-plugin-test",
+                  headers: {
+                    "X-Routing-Target": "https://gateway.example.com/staging",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw configured search headers" });
+
+    expect(getFetchHeaders(mockFetch)["x-routing-target"]).toBe(
+      "https://gateway.example.com/staging",
+    );
+  });
+
+  it("keeps provider-owned Gemini headers ahead of configured headers", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  apiKey: "AIza-plugin-test",
+                  // Lower-case collisions must replace, not append; Headers would
+                  // otherwise emit "text/plain, application/json".
+                  headers: {
+                    "content-type": "text/plain",
+                    "x-goog-api-key": "AIza-header-override",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw provider header precedence" });
+
+    const headers = getFetchHeaders(mockFetch);
+    expect(headers["content-type"]).toBe("application/json");
+    expect(headers["x-goog-api-key"]).toBe("AIza-plugin-test");
+  });
+
+  it("drops header values the request cannot carry", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  apiKey: "AIza-plugin-test",
+                  headers: {
+                    // Header values are ByteStrings; code units above U+00FF throw
+                    // from the Headers constructor rather than being ignored.
+                    "X-Em-Dash": "staging—eu",
+                    "X-Cjk": "東京",
+                    "X-Injected": "value\r\nX-Smuggled: yes",
+                    // Env substitution preserves the placeholder when unset, so an
+                    // unresolved reference must not reach the wire.
+                    "X-Unresolved": "${GEMINI_ROUTING_TARGET_NOT_SET}",
+                    // Framing headers are valid tokens but break the request.
+                    "Transfer-Encoding": "chunked",
+                    "Content-Length": "0",
+                    "X-Kept": "staging",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw unusable header values" });
+
+    const headers = getFetchHeaders(mockFetch);
+    expect(headers["x-kept"]).toBe("staging");
+    for (const dropped of [
+      "x-em-dash",
+      "x-cjk",
+      "x-injected",
+      "x-smuggled",
+      "x-unresolved",
+      "transfer-encoding",
+    ]) {
+      expect(Object.keys(headers)).not.toContain(dropped);
+    }
+    // Without the framing denylist these would reach the wire and break the POST.
+    expect(headers["content-length"]).toBeUndefined();
+  });
+
+  it("collapses operator header names that differ only by case", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  apiKey: "AIza-plugin-test",
+                  headers: {
+                    "X-Routing-Target": "staging",
+                    "x-routing-target": "prod",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw header case collision" });
+
+    // Headers.append would otherwise emit "staging, prod" as one malformed value.
+    expect(getFetchHeaders(mockFetch)["x-routing-target"]).toBe("prod");
+  });
+
+  it("never forwards models.providers.google.headers to web search", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        models: {
+          providers: {
+            google: createGoogleModelProviderConfig({
+              apiKey: "AIza-provider-test",
+              baseUrl: "https://internal-gateway.example.com/gemini/v1beta/",
+              headers: { Authorization: "Bearer gateway-token-example" },
+            }),
+          },
+        },
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  baseUrl: "https://generativelanguage.googleapis.com/v1beta/",
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw provider header isolation" });
+
+    // Provider headers are scoped to the provider baseUrl and may carry credentials.
+    // webSearch.baseUrl points elsewhere here, so forwarding them would leak the
+    // gateway token to a third-party origin.
+    expect(getGeminiFetchUrl(mockFetch)).toContain("generativelanguage.googleapis.com");
+    expect(getFetchHeaders(mockFetch)["authorization"]).toBeUndefined();
+  });
+
+  it("drops header names that are not valid HTTP tokens", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const tool = provider.createTool({
+      config: {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  apiKey: "AIza-plugin-test",
+                  headers: { "X Route": "staging", "X-Route:": "staging", "X-Good": "kept" },
+                },
+              },
+            },
+          },
+        },
+      },
+      searchConfig: { provider: "gemini" },
+    });
+
+    await tool?.execute({ query: "OpenClaw malformed header names" });
+
+    const headers = getFetchHeaders(mockFetch);
+    expect(headers["x-good"]).toBe("kept");
+    expect(Object.keys(headers)).not.toContain("x route");
+    expect(Object.keys(headers)).not.toContain("x-route:");
+  });
+
+  it("partitions the Gemini search cache by configured headers", async () => {
+    const mockFetch = installGeminiFetch();
+    const provider = createGeminiWebSearchProvider();
+    const createToolForRoutingTarget = (routingTarget: string) =>
+      provider.createTool({
+        config: {
+          plugins: {
+            entries: {
+              google: {
+                config: {
+                  webSearch: {
+                    apiKey: "AIza-plugin-test",
+                    headers: { "X-Routing-Target": routingTarget },
+                  },
+                },
+              },
+            },
+          },
+        },
+        searchConfig: { provider: "gemini" },
+      });
+    const query = "OpenClaw configured header cache partitioning";
+
+    await createToolForRoutingTarget("https://gateway.example.com/staging")?.execute({ query });
+    await createToolForRoutingTarget("https://gateway.example.com/canary")?.execute({ query });
+
+    const searchCallHeaders = getGeminiSearchCallHeaders(mockFetch);
+    expect(searchCallHeaders).toHaveLength(2);
+    expect(searchCallHeaders[1]?.["x-routing-target"]).toBe("https://gateway.example.com/canary");
   });
 
   it("accepts Gemini success JSON with empty grounding metadata", async () => {
