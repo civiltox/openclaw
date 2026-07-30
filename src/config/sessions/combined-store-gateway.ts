@@ -166,9 +166,7 @@ export function loadCombinedSessionStoreForGateway(
     typeof opts.agentId === "string" && opts.agentId.trim()
       ? normalizeAgentId(opts.agentId)
       : undefined;
-  const defaultAgentId = normalizeAgentId(
-    requestedAgentId ?? resolveSessionStoreCompatibilityAgentId(cfg),
-  );
+  const defaultAgentId = normalizeAgentId(resolveSessionStoreCompatibilityAgentId(cfg));
   const configuredAgentIds =
     opts.configuredAgentsOnly === true && !requestedAgentId
       ? new Set(listConfiguredSessionStoreAgentIds(cfg))

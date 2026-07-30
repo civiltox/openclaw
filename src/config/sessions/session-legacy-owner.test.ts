@@ -28,6 +28,12 @@ describe("retained legacy session ownership", () => {
       );
 
       expect(loadCombinedSessionStoreForGateway(cfg).store).toHaveProperty("agent:ops:main");
+      expect(
+        loadCombinedSessionStoreForGateway(cfg, { agentId: "research" }).store,
+      ).not.toHaveProperty("agent:research:main");
+      expect(loadCombinedSessionStoreForGateway(cfg, { agentId: "ops" }).store).toHaveProperty(
+        "agent:ops:main",
+      );
     });
   });
 

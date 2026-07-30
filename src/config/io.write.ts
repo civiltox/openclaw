@@ -90,6 +90,7 @@ import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./nix-mode-write-guard.js";
 import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
+import { isPerAgentSessionStoreConfig } from "./sessions/targets.js";
 import type { OpenClawConfig } from "./types.js";
 import {
   materializeLegacyAgentOwnershipForActiveChannelsResult,
@@ -194,6 +195,26 @@ export async function writeConfigFileFromContext(
     );
     nextConfig = materialized.config;
     transitionInsertedPaths = [...transitionInsertedPaths, ...materialized.insertedPaths];
+  } else if (
+    entersMultiAgent &&
+    previousSoleAgentId &&
+    !previousSoleRemains &&
+    !isPerAgentSessionStoreConfig(nextConfig.session?.store) &&
+    !nextConfig.agents?.defaults?.sessionStore?.agentId
+  ) {
+    // A removed sole agent can still physically own unscoped fixed-store rows.
+    // Persist that compatibility owner even though it is no longer routable.
+    nextConfig = {
+      ...nextConfig,
+      agents: {
+        ...nextConfig.agents,
+        defaults: {
+          ...nextConfig.agents?.defaults,
+          sessionStore: { agentId: normalizeAgentId(previousSoleAgentId) },
+        },
+      },
+    };
+    transitionInsertedPaths.push(["agents", "defaults", "sessionStore", "agentId"]);
   }
   const topologyOwnershipPaths =
     persistOwnership || retainExplicitOwnership
@@ -227,9 +248,12 @@ export async function writeConfigFileFromContext(
   const sourceStorePath = resolveCronJobsStorePathFromConfig(sourceCronConfig, deps.env);
   const destinationStorePath = resolveCronJobsStorePathFromConfig(nextConfig, deps.env);
   const guardExplicitCronStoreDestination =
-    sourceStorePath !== destinationStorePath && (persistOwnership || retainExplicitOwnership);
+    (persistOwnership || retainExplicitOwnership) &&
+    (sourceStorePath !== destinationStorePath ||
+      (writesOwnershipTopology && cronHandoffAgentId === undefined));
   if (guardExplicitCronStoreDestination) {
     await assertCronStoreDestinationHasExplicitOwners({
+      config: nextConfig,
       storePath: destinationStorePath,
       env: deps.env,
     });
@@ -578,10 +602,10 @@ export async function writeConfigFileFromContext(
           await maintainConfigBackups(configPath, deps.fs.promises);
         }
         if (guardExplicitCronStoreDestination) {
-          // The destination is inactive under this config until rename. Recheck its
-          // effective rows at the commit edge; external old-code writers cannot honor
-          // a new fence, so this intentionally protects the inspected switch boundary.
+          // Recheck effective rows at the commit edge. External old-code writers cannot
+          // honor a new fence, so this protects only the inspected ownership boundary.
           await assertCronStoreDestinationHasExplicitOwners({
+            config: nextConfig,
             storePath: destinationStorePath,
             env: deps.env,
           });

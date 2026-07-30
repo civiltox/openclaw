@@ -3,7 +3,11 @@ import {
   resolveSessionStoreAgentId,
   resolveSessionStoreKey,
 } from "../../gateway/session-store-key.js";
-import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import {
+  isIncognitoSessionKey,
+  normalizeAgentId,
+  resolveAgentIdFromSessionKey,
+} from "../../routing/session-key.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentMainSessionKey } from "./main-session.js";
@@ -235,7 +239,15 @@ function resolveSessionEntryStoreTarget(
     sessionKey: requestedKey,
     storeAgentId: scope.agentId,
   });
-  const agentId = scope.agentId ?? resolveSessionStoreAgentId(scope.cfg, canonicalKey);
+  const canonicalAgentId = resolveAgentIdFromSessionKey(canonicalKey);
+  const explicitAgentId = scope.agentId ? normalizeAgentId(scope.agentId) : undefined;
+  if (canonicalAgentId && explicitAgentId && canonicalAgentId !== explicitAgentId) {
+    throw new Error(
+      `Session key owner "${canonicalAgentId}" does not match requested agent "${explicitAgentId}".`,
+    );
+  }
+  const agentId =
+    canonicalAgentId ?? explicitAgentId ?? resolveSessionStoreAgentId(scope.cfg, canonicalKey);
   const scanTargets = buildLogicalSessionEntryCandidateKeys({
     agentId,
     canonicalKey,

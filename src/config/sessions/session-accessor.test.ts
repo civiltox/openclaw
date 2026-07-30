@@ -1526,6 +1526,21 @@ describe("session accessor seam", () => {
     expect(snapshot.currentEntry?.sessionId).toBe("legacy-ops-session");
   });
 
+  it("rejects a logical access owner that conflicts with a qualified session key", () => {
+    expect(() =>
+      resolveSessionEntryAccessTarget({
+        agentId: "ops",
+        cfg: {
+          agents: {
+            ownership: "explicit",
+            entries: { ops: {}, research: {} },
+          },
+        },
+        sessionKey: "agent:research:main",
+      }),
+    ).toThrow('Session key owner "research" does not match requested agent "ops".');
+  });
+
   it("rejects reply session initialization when the entry is deleted during prepare", async () => {
     const sessionKey = "agent:main:main";
     await upsertSessionEntry(

@@ -37,6 +37,11 @@ async function createStoreSwitchFixture(
     ownership: "explicit",
     entries: { ops: {}, research: {} },
   },
+  options: {
+    nextAgents?: OpenClawConfig["agents"];
+    sessionStore?: string;
+    switchStore?: boolean;
+  } = {},
 ) {
   const root = tempDirs.make("openclaw-cron-store-switch-");
   const configPath = path.join(root, "openclaw.json");
@@ -49,10 +54,12 @@ async function createStoreSwitchFixture(
   } as NodeJS.ProcessEnv;
   const config = {
     ...(agents !== null ? { agents } : {}),
+    ...(options.sessionStore ? { session: { store: options.sessionStore } } : {}),
     cron: { store: sourceStorePath } as CronConfigWithStore,
   } satisfies OpenClawConfig;
   await fs.writeFile(configPath, `${JSON.stringify(config)}\n`, "utf8");
-  await saveCronJobsStore(destinationStorePath, { version: 1, jobs: destinationJobs }, { env });
+  const targetStorePath = options.switchStore === false ? sourceStorePath : destinationStorePath;
+  await saveCronJobsStore(targetStorePath, { version: 1, jobs: destinationJobs }, { env });
   const io = createConfigIO({
     configPath,
     env,
@@ -64,17 +71,24 @@ async function createStoreSwitchFixture(
   const snapshot = await io.readConfigFileSnapshot();
   const nextConfig = {
     ...snapshot.config,
-    cron: { ...(snapshot.config.cron as object), store: destinationStorePath },
+    ...(options.nextAgents ? { agents: options.nextAgents } : {}),
+    cron: { ...(snapshot.config.cron as object), store: targetStorePath },
   } as OpenClawConfig;
+  const allowedAgentRosterRemovals = options.nextAgents
+    ? Object.keys(agents?.entries ?? {}).filter(
+        (agentId) => !Object.hasOwn(options.nextAgents?.entries ?? {}, agentId),
+      )
+    : [];
   const write = (preCommitRuntimePreflight?: () => Promise<void>) =>
     io.writeConfigFile(nextConfig, {
       baseSnapshot: snapshot,
-      explicitSetPaths: [["cron"]],
+      explicitSetPaths: [options.nextAgents ? ["agents"] : ["cron"]],
       explicitSetValueSource: nextConfig,
+      ...(allowedAgentRosterRemovals.length > 0 ? { allowedAgentRosterRemovals } : {}),
       preservedLegacyRootKeys: ["cron"],
       ...(preCommitRuntimePreflight ? { preCommitRuntimePreflight } : {}),
     });
-  return { configPath, destinationStorePath, env, write };
+  return { configPath, destinationStorePath: targetStorePath, env, write };
 }
 
 describe("cron store switch ownership guard", () => {
@@ -92,6 +106,12 @@ describe("cron store switch ownership guard", () => {
     expect((persisted.cron as CronConfigWithStore | undefined)?.store).toBe(
       fixture.destinationStorePath,
     );
+  });
+
+  it("refuses a destination job owned by an agent absent from the incoming roster", async () => {
+    const fixture = await createStoreSwitchFixture([cronJob("departed-owner", "legacy-agent")]);
+
+    await expect(fixture.write()).rejects.toThrow("agents absent from the incoming roster");
   });
 
   it("allows an explicit-roster switch when a session key owns the destination job", async () => {
@@ -132,5 +152,41 @@ describe("cron store switch ownership guard", () => {
         );
       }),
     ).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
+  });
+
+  it("refuses a same-store roster replacement that would orphan ownerless jobs", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { research: {}, writer: {} },
+        },
+      },
+    );
+
+    await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
+  });
+
+  it("retains a removed sole agent as the fixed-session-store compatibility owner", async () => {
+    const sessionStore = path.join(tempDirs.make("openclaw-fixed-session-owner-"), "sessions.json");
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("owned", "research")],
+      { entries: { ops: {} } },
+      {
+        sessionStore,
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { research: {}, writer: {} },
+        },
+      },
+    );
+
+    await expect(fixture.write()).resolves.toBeDefined();
+    const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
+    expect(persisted.agents?.defaults?.sessionStore?.agentId).toBe("ops");
   });
 });

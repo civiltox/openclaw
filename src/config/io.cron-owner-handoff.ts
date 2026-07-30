@@ -1,9 +1,10 @@
+import { listAgentIds } from "../agents/agent-scope-config.js";
 import {
   readRetainedLegacyDefaultCronOwnerForStore,
   retainLegacyDefaultCronOwnerHandoffForStore,
 } from "../cron/legacy-default-agent-owner-handoff.js";
 import { beginLegacyDefaultOwnerHandoff } from "../cron/live-service-registry.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type CronOwnerHandoffTarget = {
@@ -11,18 +12,22 @@ type CronOwnerHandoffTarget = {
   storePath: string;
 };
 
-function hasExplicitCronOwner(job: unknown): boolean {
+function resolveExplicitCronOwner(job: unknown): string | undefined {
   if (!job || typeof job !== "object" || Array.isArray(job)) {
-    return false;
+    return undefined;
   }
   const record = job as { agentId?: unknown; sessionKey?: unknown };
-  const hasAgentId = typeof record.agentId === "string" && record.agentId.trim().length > 0;
+  const agentId = typeof record.agentId === "string" ? record.agentId.trim() : "";
+  if (agentId) {
+    return normalizeAgentId(agentId);
+  }
   const sessionKey = typeof record.sessionKey === "string" ? record.sessionKey : undefined;
-  return hasAgentId || parseAgentSessionKey(sessionKey)?.agentId !== undefined;
+  return parseAgentSessionKey(sessionKey)?.agentId;
 }
 
 /** Refuses a store switch that would publish ownerless jobs under explicit ownership. */
 export async function assertCronStoreDestinationHasExplicitOwners(params: {
+  config: OpenClawConfig;
   storePath: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
@@ -33,15 +38,25 @@ export async function assertCronStoreDestinationHasExplicitOwners(params: {
     env: params.env,
     readOnly: true,
   });
-  const ownerlessJobs = (state?.rawJobs ?? []).filter((job) => !hasExplicitCronOwner(job));
-  if (ownerlessJobs.length === 0) {
-    return;
+  const eligibleAgentIds = new Set(listAgentIds(params.config).map(normalizeAgentId));
+  const rawJobs = state?.rawJobs ?? [];
+  const ownerlessJobs = rawJobs.filter((job) => !resolveExplicitCronOwner(job));
+  const unavailableJobs = rawJobs.filter((job) => {
+    const owner = resolveExplicitCronOwner(job);
+    return owner !== undefined && !eligibleAgentIds.has(owner);
+  });
+  if (ownerlessJobs.length > 0) {
+    // Once explicit ownership publishes, no ambient owner remains to repair this store later.
+    // Refuse before the config points at it rather than silently orphaning scheduled work.
+    throw new Error(
+      `Config write refused: cron.store destination ${params.storePath} contains ${ownerlessJobs.length} ownerless legacy cron job(s). Assign every destination job an explicit agentId with openclaw cron edit, or repair the destination with openclaw doctor --fix while its legacy owner is still available, then retry the store change.`,
+    );
   }
-  // Once explicit ownership publishes, no ambient owner remains to repair this store later.
-  // Refuse before the config points at it rather than silently orphaning scheduled work.
-  throw new Error(
-    `Config write refused: cron.store destination ${params.storePath} contains ${ownerlessJobs.length} ownerless legacy cron job(s). Assign every destination job an explicit agentId with openclaw cron edit, or repair the destination with openclaw doctor --fix while its legacy owner is still available, then retry the store change.`,
-  );
+  if (unavailableJobs.length > 0) {
+    throw new Error(
+      `Config write refused: cron.store destination ${params.storePath} contains ${unavailableJobs.length} cron job(s) owned by agents absent from the incoming roster. Reassign those jobs with openclaw cron edit before retrying the store change.`,
+    );
+  }
 }
 
 /** Seals and migrates every cron store until the config write commits or fails. */
