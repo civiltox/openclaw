@@ -2,7 +2,6 @@ import type fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { listAgentEntries, tryResolveDefaultAgentId } from "../agents/agent-scope-config.js";
-import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { isVerbose } from "../global-state.js";
 import { isVitestRuntimeEnv } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -38,10 +37,7 @@ import {
   type ConfigWriteAuditResult,
 } from "./io.audit.js";
 import type { ConfigIoContext } from "./io.context.js";
-import {
-  assertCronStoreDestinationHasExplicitOwners,
-  prepareLegacyCronOwnerHandoffs,
-} from "./io.cron-owner-handoff.js";
+import { planCronStoreWrite, prepareLegacyCronOwnerHandoffs } from "./io.cron-owner-handoff.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
 import { assertAutomaticBindingsWriteAllowed } from "./io.ownership-write-guard.js";
 import {
@@ -244,31 +240,18 @@ export async function writeConfigFileFromContext(
       : previousSoleHandoffAgentId
         ? previousSoleHandoffAgentId
         : undefined;
-  const cronHandoffTargets = new Map<string, OpenClawConfig>();
   const sourceCronConfig = snapshot.sourceConfigBeforeMigrations ?? snapshot.config;
-  const sourceStorePath = resolveCronJobsStorePathFromConfig(sourceCronConfig, deps.env);
-  const destinationStorePath = resolveCronJobsStorePathFromConfig(nextConfig, deps.env);
   const publishesExplicitOwnership =
     persistOwnership ||
     retainExplicitOwnership ||
     (nextAgentEntries.length > 1 && nextConfig.agents?.ownership === "explicit");
-  const guardExplicitCronStoreDestination =
-    publishesExplicitOwnership && sourceStorePath !== destinationStorePath;
-  if (guardExplicitCronStoreDestination) {
-    await assertCronStoreDestinationHasExplicitOwners({
-      config: nextConfig,
-      storePath: destinationStorePath,
-      env: deps.env,
-    });
-  }
-  if (cronHandoffAgentId) {
-    if (sourceStorePath !== destinationStorePath) {
-      throw new Error(
-        `Config write refused: cron ownership migration cannot be committed atomically while cron.store changes from ${sourceStorePath} to ${destinationStorePath}. Keep cron.store unchanged while ownership is materialized; before a later store-only switch, assign explicit agentId values to every destination job because the explicit roster has no ambient fallback owner.`,
-      );
-    }
-    cronHandoffTargets.set(sourceStorePath, sourceCronConfig);
-  }
+  const cronStoreWritePlan = await planCronStoreWrite({
+    cronHandoffAgentId,
+    env: deps.env,
+    nextConfig,
+    publishesExplicitOwnership,
+    sourceConfig: sourceCronConfig,
+  });
   persistCandidate = nextConfig;
   let explicitSetValueSource: unknown = options.explicitSetValueSource ?? nextConfig;
   for (const ownershipPath of topologyOwnershipPaths) {
@@ -584,7 +567,7 @@ export async function writeConfigFileFromContext(
       const prepared = await prepareLegacyCronOwnerHandoffs({
         env: deps.env,
         legacyDefaultAgentId: cronHandoffAgentId,
-        targets: [...cronHandoffTargets].map(([storePath, config]) => ({ storePath, config })),
+        targets: cronStoreWritePlan.targets,
       });
       releaseCronHandoffs = prepared.release;
     }
@@ -604,14 +587,10 @@ export async function writeConfigFileFromContext(
         if (deps.fs.existsSync(configPath)) {
           await maintainConfigBackups(configPath, deps.fs.promises);
         }
-        if (guardExplicitCronStoreDestination) {
+        if (cronStoreWritePlan.recheckExplicitDestination) {
           // Recheck effective rows at the commit edge. External old-code writers cannot
           // honor a new fence, so this protects only the inspected ownership boundary.
-          await assertCronStoreDestinationHasExplicitOwners({
-            config: nextConfig,
-            storePath: destinationStorePath,
-            env: deps.env,
-          });
+          await cronStoreWritePlan.recheckExplicitDestination();
         }
         if (options.baseSnapshot) {
           // This must follow every awaited guard so a concurrent config writer wins.

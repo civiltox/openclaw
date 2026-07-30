@@ -4,12 +4,18 @@ import {
   retainLegacyDefaultCronOwnerHandoffForStore,
 } from "../cron/legacy-default-agent-owner-handoff.js";
 import { beginLegacyDefaultOwnerHandoff } from "../cron/live-service-registry.js";
+import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type CronOwnerHandoffTarget = {
   config: OpenClawConfig;
   storePath: string;
+};
+
+type CronStoreWritePlan = {
+  recheckExplicitDestination?: () => Promise<void>;
+  targets: CronOwnerHandoffTarget[];
 };
 
 function resolveExplicitCronOwner(job: unknown): string | undefined {
@@ -57,6 +63,40 @@ export async function assertCronStoreDestinationHasExplicitOwners(params: {
       `Config write refused: cron.store destination ${params.storePath} contains ${unavailableJobs.length} cron job(s) owned by agents absent from the incoming roster. Reassign those jobs with openclaw cron edit before retrying the store change.`,
     );
   }
+}
+
+/** Validates a cron store switch and plans any same-store legacy-owner handoff. */
+export async function planCronStoreWrite(params: {
+  cronHandoffAgentId?: string;
+  env: NodeJS.ProcessEnv;
+  nextConfig: OpenClawConfig;
+  publishesExplicitOwnership: boolean;
+  sourceConfig: OpenClawConfig;
+}): Promise<CronStoreWritePlan> {
+  const sourceStorePath = resolveCronJobsStorePathFromConfig(params.sourceConfig, params.env);
+  const destinationStorePath = resolveCronJobsStorePathFromConfig(params.nextConfig, params.env);
+  const recheckExplicitDestination =
+    params.publishesExplicitOwnership && sourceStorePath !== destinationStorePath
+      ? async () =>
+          await assertCronStoreDestinationHasExplicitOwners({
+            config: params.nextConfig,
+            storePath: destinationStorePath,
+            env: params.env,
+          })
+      : undefined;
+  await recheckExplicitDestination?.();
+  if (!params.cronHandoffAgentId) {
+    return { recheckExplicitDestination, targets: [] };
+  }
+  if (sourceStorePath !== destinationStorePath) {
+    throw new Error(
+      `Config write refused: cron ownership migration cannot be committed atomically while cron.store changes from ${sourceStorePath} to ${destinationStorePath}. Keep cron.store unchanged while ownership is materialized; before a later store-only switch, assign explicit agentId values to every destination job because the explicit roster has no ambient fallback owner.`,
+    );
+  }
+  return {
+    recheckExplicitDestination,
+    targets: [{ storePath: sourceStorePath, config: params.sourceConfig }],
+  };
 }
 
 /** Seals and migrates every cron store until the config write commits or fails. */
