@@ -401,4 +401,44 @@ describe("runNonInteractiveLocalSetup default-agent ownership", () => {
     expect(mocks.applyAuthChoice).not.toHaveBeenCalled();
     expect(mocks.commitConfig).not.toHaveBeenCalled();
   });
+
+  it("keeps an include-owned sole workspace when an unselected override differs", async () => {
+    await expect(
+      runNonInteractiveLocalSetup({
+        opts: {
+          nonInteractive: true,
+          mode: "local",
+          workspace: "/tmp/requested-workspace",
+          authChoice: "demo-api-key",
+          skipHooks: true,
+          skipSkills: true,
+          skipHealth: true,
+          installDaemon: false,
+        },
+        runtime,
+        agentRosterIncludeOwned: true,
+        baseConfig: {
+          agents: { entries: { ops: { workspace: "/tmp/current-workspace" } } },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.applyAuthChoice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({
+          agentId: "ops",
+          workspaceDir: "/tmp/current-workspace",
+        }),
+      }),
+    );
+    expect(mocks.commitConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfig: expect.objectContaining({
+          agents: expect.objectContaining({
+            entries: { ops: expect.objectContaining({ workspace: "/tmp/current-workspace" }) },
+          }),
+        }),
+      }),
+    );
+  });
 });

@@ -40,6 +40,7 @@ describe("cron state-only runtime deltas", () => {
     const writerA = structuredClone(loaded.store);
     const writerB = structuredClone(loaded.store);
     writerA.jobs[0]!.state = { nextRunAtMs: 101 };
+    writerA.jobs[0]!.updatedAtMs = NOW + 101;
     writerB.jobs[1]!.state = { nextRunAtMs: 202 };
 
     for (const writer of [writerA, writerB]) {
@@ -51,6 +52,7 @@ describe("cron state-only runtime deltas", () => {
       });
     }
     expect(writerB.jobs[0]?.state.nextRunAtMs).toBe(101);
+    expect(writerB.jobs[0]?.updatedAtMs).toBe(NOW + 101);
     expect((await loadCronStore(storePath)).jobs.map((entry) => entry.state.nextRunAtMs)).toEqual([
       101, 202,
     ]);

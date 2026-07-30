@@ -56,3 +56,22 @@ it("rejects an ownerless bare-global run abort on an explicit fleet", async () =
   ]);
   expect(active.controller.signal.aborted).toBe(false);
 });
+
+it("canonicalizes a bare explicit-fleet key with the selected agent", async () => {
+  const active = createActiveRun("incident-42", { agentId: "work" });
+  const context = createChatAbortContext({
+    chatAbortControllers: new Map([["run-work", active]]),
+    getRuntimeConfig: () => ({
+      agents: { ownership: "explicit", entries: { ops: {}, work: {} } },
+    }),
+  });
+
+  const respond = await invokeChatAbortHandler({
+    handler: handleChatAbortRequestWithLifecycle,
+    context,
+    request: { sessionKey: "incident-42", agentId: "work", runId: "run-work" },
+  });
+
+  expect(respond.mock.calls.at(-1)?.[0]).toBe(true);
+  expect(active.controller.signal.aborted).toBe(true);
+});

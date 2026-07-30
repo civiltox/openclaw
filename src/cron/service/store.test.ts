@@ -597,6 +597,7 @@ describe("cron service store seam coverage", () => {
     await persist(state, { stateOnly: true });
 
     expect(onEvent).not.toHaveBeenCalled();
+    expect(state.store.jobs.map((job) => job.id)).toEqual(["durable-state-only-job"]);
     expect([...state.durableNextRunAtMsByJobId.keys()]).toEqual(["durable-state-only-job"]);
     expect((await loadCronStore(storePath)).jobs.map((job) => job.id)).toEqual([
       "durable-state-only-job",

@@ -28,7 +28,13 @@ export function writeCronRuntimeRowDeltas(params: {
             .selectFrom("cron_jobs")
             .selectAll()
             .where("store_key", "=", params.storeKey),
-        ).rows.map((row) => [row.job_id, stateFromRow(row)]),
+        ).rows.map((row) => [
+          row.job_id,
+          {
+            state: stateFromRow(row),
+            updatedAtMs: row.runtime_updated_at_ms ?? row.updated_at,
+          },
+        ]),
       )
     : undefined;
   // The caller owns the shared-state write transaction, so a later conflict
@@ -41,12 +47,19 @@ export function writeCronRuntimeRowDeltas(params: {
       if (!current || expected === undefined) {
         throw params.conflictError();
       }
-      const resolution = resolveCronRuntimeDelta({ current, next: job.state ?? {}, expected });
+      const resolution = resolveCronRuntimeDelta({
+        current: current.state,
+        next: job.state ?? {},
+        expected,
+      });
       if (resolution === "conflict") {
         throw params.conflictError();
       }
       if (resolution === "preserve") {
-        job.state = structuredClone(current);
+        job.state = structuredClone(current.state);
+        if (typeof current.updatedAtMs === "number") {
+          job.updatedAtMs = current.updatedAtMs;
+        }
         continue;
       }
     }

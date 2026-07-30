@@ -64,7 +64,11 @@ export async function handleChatAbortRequestWithLifecycle(
   const parsedAbortSessionKey = parseAgentSessionKey(rawSessionKey);
   const compatibilityDefaultAgentId = tryResolveLegacyCompatibilityAgentId(abortCfg);
   const abortSessionResolvesGlobal =
-    resolveSessionStoreKey({ cfg: abortCfg, sessionKey: rawSessionKey }) === "global";
+    resolveSessionStoreKey({
+      cfg: abortCfg,
+      sessionKey: rawSessionKey,
+      storeAgentId: agentIdOverride,
+    }) === "global";
   const inferredGlobalAgentId =
     !agentIdOverride && parsedAbortSessionKey && abortSessionResolvesGlobal
       ? normalizeAgentId(parsedAbortSessionKey.agentId)

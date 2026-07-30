@@ -362,10 +362,10 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
     if (committed) {
       state.storeEpoch = committed.storeEpoch;
       state.runtimeRevision = committed.runtimeRevision;
-      if (committed.runtimeMerged) {
-        persistedStore = mergeCommittedCronStoreIntoLive(store, committed.store);
-        state.store = persistedStore;
-      }
+      // The canonical store can differ even without a revision bump when a pre-upgrade
+      // writer changes rows. Always publish it so stale topology cannot be resurrected.
+      persistedStore = mergeCommittedCronStoreIntoLive(store, committed.store);
+      state.store = persistedStore;
       state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(committed.store.jobs);
     }
   } catch (error) {

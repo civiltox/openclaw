@@ -149,14 +149,16 @@ export async function writeConfigFileFromContext(
     previousSoleAgentId !== undefined && nextAgentIds.has(normalizeAgentId(previousSoleAgentId));
   const previousSoleHandoffAgentId =
     entersMultiAgent && previousSoleRemains ? previousSoleAgentId : undefined;
-  const writesOwnershipTopology = [...(options.explicitSetPaths ?? []), ...unsetPaths].some(
-    (writePath) =>
-      writePath[0] === "agents" &&
-      (writePath.length === 1 ||
-        writePath[1] === "entries" ||
-        writePath[1] === "list" ||
-        writePath[1] === "ownership"),
-  );
+  const writesOwnershipTopology =
+    !isDeepStrictEqual(previousAgentEntries, nextAgentEntries) ||
+    [...(options.explicitSetPaths ?? []), ...unsetPaths].some(
+      (writePath) =>
+        writePath[0] === "agents" &&
+        (writePath.length === 1 ||
+          writePath[1] === "entries" ||
+          writePath[1] === "list" ||
+          writePath[1] === "ownership"),
+    );
   // A non-roster write must preserve the authored legacy roster. Retire its
   // default only when this write explicitly owns the topology migration.
   const persistOwnership =
@@ -250,6 +252,7 @@ export async function writeConfigFileFromContext(
     env: deps.env,
     nextConfig,
     publishesExplicitOwnership,
+    requiresCurrentStoreValidation: writesOwnershipTopology,
     sourceConfig: sourceCronConfig,
   });
   persistCandidate = nextConfig;

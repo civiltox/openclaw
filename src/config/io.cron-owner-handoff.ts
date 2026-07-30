@@ -5,7 +5,12 @@ import {
 } from "../cron/legacy-default-agent-owner-handoff.js";
 import { beginLegacyDefaultOwnerHandoff } from "../cron/live-service-registry.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  isValidAgentId,
+  normalizeAgentId,
+  normalizeOptionalAgentId,
+  parseAgentSessionKey,
+} from "../routing/session-key.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type CronOwnerHandoffTarget = {
@@ -23,12 +28,20 @@ function resolveExplicitCronOwner(job: unknown): string | undefined {
     return undefined;
   }
   const record = job as { agentId?: unknown; sessionKey?: unknown };
-  const agentId = typeof record.agentId === "string" ? record.agentId.trim() : "";
-  if (agentId) {
-    return normalizeAgentId(agentId);
+  const hasConfiguredAgentId = Object.hasOwn(record, "agentId");
+  const rawAgentId = typeof record.agentId === "string" ? record.agentId.trim() : undefined;
+  if (hasConfiguredAgentId && (!rawAgentId || !isValidAgentId(rawAgentId))) {
+    throw new Error("cron job agentId must not be blank or malformed when supplied");
   }
+  const configuredAgentId = normalizeOptionalAgentId(rawAgentId);
   const sessionKey = typeof record.sessionKey === "string" ? record.sessionKey : undefined;
-  return parseAgentSessionKey(sessionKey)?.agentId;
+  const scopedAgentId = normalizeOptionalAgentId(parseAgentSessionKey(sessionKey)?.agentId);
+  if (configuredAgentId && scopedAgentId && configuredAgentId !== scopedAgentId) {
+    throw new Error(
+      `cron job agentId ${configuredAgentId} does not match sessionKey owner ${scopedAgentId}`,
+    );
+  }
+  return configuredAgentId ?? scopedAgentId;
 }
 
 /** Refuses a store switch that would publish ownerless jobs under explicit ownership. */
@@ -71,12 +84,15 @@ export async function planCronStoreWrite(params: {
   env: NodeJS.ProcessEnv;
   nextConfig: OpenClawConfig;
   publishesExplicitOwnership: boolean;
+  requiresCurrentStoreValidation: boolean;
   sourceConfig: OpenClawConfig;
 }): Promise<CronStoreWritePlan> {
   const sourceStorePath = resolveCronJobsStorePathFromConfig(params.sourceConfig, params.env);
   const destinationStorePath = resolveCronJobsStorePathFromConfig(params.nextConfig, params.env);
   const recheckExplicitDestination =
-    params.publishesExplicitOwnership && sourceStorePath !== destinationStorePath
+    params.publishesExplicitOwnership &&
+    (sourceStorePath !== destinationStorePath ||
+      (params.requiresCurrentStoreValidation && !params.cronHandoffAgentId))
       ? async () =>
           await assertCronStoreDestinationHasExplicitOwners({
             config: params.nextConfig,

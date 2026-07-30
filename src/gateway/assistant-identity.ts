@@ -2,13 +2,11 @@
 // Combines UI, agent config, and workspace identity files for Control UI display.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import {
-  resolveAgentWorkspaceDir,
-  resolveDefaultAgentId,
-  tryResolveSoleAgentId,
-} from "../agents/agent-scope.js";
+import { listAgentEntries } from "../agents/agent-scope-config.js";
+import { resolveAgentWorkspaceDir, tryResolveSoleAgentId } from "../agents/agent-scope.js";
 import { resolveAgentIdentity } from "../agents/identity.js";
 import { loadAgentIdentity } from "../commands/agents.config.js";
+import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
@@ -106,9 +104,14 @@ export function resolveAssistantIdentity(params: {
   workspaceDir?: string | null;
 }): ResolvedAssistantIdentity {
   const soleAgentId = tryResolveSoleAgentId(params.cfg);
-  const agentId = normalizeAgentId(
-    params.agentId ?? soleAgentId ?? resolveDefaultAgentId(params.cfg),
-  );
+  // Presentation must render before agent selection and is not an authorization decision.
+  // Use a deterministic visible fallback instead of throwing on an explicit fleet.
+  const presentationAgentId =
+    params.agentId ??
+    tryResolveLegacyCompatibilityAgentId(params.cfg) ??
+    listAgentEntries(params.cfg)[0]?.id ??
+    "main";
+  const agentId = normalizeAgentId(presentationAgentId);
   const isDefaultAgent = soleAgentId !== undefined && agentId === normalizeAgentId(soleAgentId);
   const workspaceDir = params.workspaceDir ?? resolveAgentWorkspaceDir(params.cfg, agentId);
   const configAssistant = params.cfg.ui?.assistant;

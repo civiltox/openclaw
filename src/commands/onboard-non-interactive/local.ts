@@ -298,6 +298,7 @@ export async function runNonInteractiveLocalSetup(params: {
   if (
     params.agentRosterIncludeOwned === true &&
     explicitWorkspaceRequested &&
+    !workspaceConflict &&
     currentTarget.workspaceDir !== requestedWorkspaceDir
   ) {
     throw new Error(

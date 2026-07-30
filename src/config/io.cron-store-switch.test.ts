@@ -117,6 +117,38 @@ describe("cron store switch ownership guard", () => {
     await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
   });
 
+  it("stamps ownership for an undeclared full-roster rewrite of a migrated fleet", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("owned", "research")],
+      { entries: { ops: { default: true }, research: {} } },
+      {
+        declarePaths: false,
+        switchStore: false,
+        nextAgents: { entries: { research: {}, ops: {} } },
+      },
+    );
+
+    await expect(fixture.write()).resolves.toBeDefined();
+    const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
+    expect(persisted.agents?.ownership).toBe("explicit");
+  });
+
+  it("refuses a same-store sole replacement with ownerless jobs", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: { default: true } } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { research: {}, writer: {} },
+        },
+      },
+    );
+
+    await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
+  });
+
   it("allows an explicit-roster switch when destination jobs have owners", async () => {
     const fixture = await createStoreSwitchFixture([cronJob("owned", "ops")]);
 
@@ -139,6 +171,50 @@ describe("cron store switch ownership guard", () => {
     ]);
 
     await expect(fixture.write()).resolves.toBeDefined();
+  });
+
+  it("refuses conflicting destination agentId and session-key owners", async () => {
+    const fixture = await createStoreSwitchFixture([
+      { ...cronJob("mismatch", "ops"), sessionKey: "agent:research:main" },
+    ]);
+
+    await expect(fixture.write()).rejects.toThrow(
+      "cron job agentId ops does not match sessionKey owner research",
+    );
+  });
+
+  it("refuses a blank destination agentId even with a scoped session key", async () => {
+    const fixture = await createStoreSwitchFixture([cronJob("valid", "ops")]);
+    await fs.mkdir(path.dirname(fixture.destinationStorePath), { recursive: true });
+    await fs.writeFile(
+      fixture.destinationStorePath,
+      JSON.stringify([
+        {
+          ...cronJob("blank"),
+          agentId: "",
+          sessionKey: "agent:ops:main",
+        },
+      ]),
+      "utf8",
+    );
+
+    await expect(fixture.write()).rejects.toThrow(
+      "cron job agentId must not be blank or malformed when supplied",
+    );
+  });
+
+  it("refuses a malformed destination agentId before normalization", async () => {
+    const fixture = await createStoreSwitchFixture([cronJob("valid", "ops")]);
+    await fs.mkdir(path.dirname(fixture.destinationStorePath), { recursive: true });
+    await fs.writeFile(
+      fixture.destinationStorePath,
+      JSON.stringify([{ ...cronJob("malformed"), agentId: "!!!" }]),
+      "utf8",
+    );
+
+    await expect(fixture.write()).rejects.toThrow(
+      "cron job agentId must not be blank or malformed when supplied",
+    );
   });
 
   it("allows an implicit-main switch to ownerless destination jobs", async () => {
