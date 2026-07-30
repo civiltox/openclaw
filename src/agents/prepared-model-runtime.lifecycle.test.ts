@@ -84,7 +84,8 @@ vi.mock("./agent-scope.js", () => ({
     mocks.configuredAgentIds.length === 1 ? mocks.configuredAgentIds[0] : undefined,
 }));
 
-vi.mock("./agent-scope-config.js", () => ({
+vi.mock("./agent-scope-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-scope-config.js")>()),
   tryResolveSoleAgentId: () =>
     mocks.configuredAgentIds.length === 1 ? mocks.configuredAgentIds[0] : undefined,
 }));
