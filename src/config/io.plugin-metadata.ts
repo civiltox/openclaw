@@ -1,9 +1,7 @@
 import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
-import {
-  resolvePluginMetadataSnapshot,
-  type PluginMetadataSnapshotPluginIdScope,
-} from "../plugins/plugin-metadata-snapshot.js";
+import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import type { PluginMetadataSnapshotPluginIdScope } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 /** Merges validation metadata from every configured agent workspace. */
