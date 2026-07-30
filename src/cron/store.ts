@@ -194,7 +194,7 @@ type SaveCronStoreOptions = {
   /** Detect runtime writes committed since this snapshot was loaded. */
   expectedRuntimeRevision?: number;
   /** Per-job runtime baseline for distinguishing stale siblings from intentional writes. */
-  expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"]>;
+  expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
   /** Advance the epoch when an ownership migration changes topology meaning. */
   bumpStoreEpoch?: boolean;
 };

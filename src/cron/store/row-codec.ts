@@ -590,7 +590,7 @@ export function replaceCronRows(
   options?: {
     expectedStoreEpoch?: number;
     expectedRuntimeRevision?: number;
-    expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"]>;
+    expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
     bumpStoreEpoch?: boolean;
   },
 ): number {
@@ -693,7 +693,7 @@ export function updateCronRuntimeRows(
   options?: {
     expectedRuntimeRevision?: number;
     currentRuntimeRevision?: number;
-    expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"]>;
+    expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
   },
 ): number {
   const expectedRuntimeRevision = options?.expectedRuntimeRevision;

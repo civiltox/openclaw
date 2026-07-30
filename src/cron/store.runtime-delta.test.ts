@@ -28,7 +28,7 @@ function job(id: string): CronJob {
 }
 
 function runtimeBaseline(store: CronStoreFile) {
-  return new Map<string, CronJob["state"]>(
+  return new Map<string, CronJob["state"] | undefined>(
     store.jobs.map((entry) => [entry.id, structuredClone(entry.state ?? {})]),
   );
 }

@@ -12,7 +12,7 @@ export function writeCronRuntimeRowDeltas(params: {
   store: CronStoreFile;
   expectedRuntimeRevision?: number;
   currentRuntimeRevision?: number;
-  expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"]>;
+  expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
   conflictError: () => Error;
   incrementRevision: () => number;
 }): number {
