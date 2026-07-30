@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import { mergeValidationPluginMetadataSnapshots } from "./io.context.js";
+import { mergeValidationPluginMetadataSnapshots } from "./io.plugin-metadata.js";
 
 function plugin(id: string, source: string): PluginManifestRecord {
   return {
