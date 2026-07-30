@@ -662,27 +662,32 @@ export function replaceCronRows(
   return nextStoreEpoch;
 }
 
-/** Upserts one persisted cron row without rewriting unrelated jobs in its store partition.
- * The caller owns the shared-state write transaction so the row and epoch stay atomic. */
+/** Upserts one persisted cron row without rewriting unrelated jobs in its store partition. */
 export function upsertCronJobRow(
   db: DatabaseSync,
   storeKey: string,
   job: CronJob,
   sortOrder: number,
 ): number {
-  const normalized = normalizeCronJobForSqlite(job);
-  if (!normalized) {
-    throw new Error(`Cannot persist invalid cron job ${job.id}`);
-  }
-  const values = bindCronJobRow(storeKey, normalized, sortOrder);
-  executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .insertInto("cron_jobs")
-      .values(values)
-      .onConflict((conflict) => conflict.columns(["store_key", "job_id"]).doUpdateSet(values)),
-  );
-  return incrementCronStoreEpoch(db, storeKey);
+  const upsert = () => {
+    const normalized = normalizeCronJobForSqlite(job);
+    if (!normalized) {
+      throw new Error(`Cannot persist invalid cron job ${job.id}`);
+    }
+    const values = bindCronJobRow(storeKey, normalized, sortOrder);
+    executeSqliteQuerySync(
+      db,
+      getCronStoreKysely(db)
+        .insertInto("cron_jobs")
+        .values(values)
+        .onConflict((conflict) => conflict.columns(["store_key", "job_id"]).doUpdateSet(values)),
+    );
+    // Row upserts replace runtime columns as well as topology. Advance both revisions
+    // in this transaction so a stale runtime writer cannot interleave after the row write.
+    incrementCronRuntimeRevision(db, storeKey);
+    return incrementCronStoreEpoch(db, storeKey);
+  };
+  return db.isTransaction ? upsert() : runSqliteDeferredTransactionSync(db, upsert);
 }
 
 /** Updates only mutable runtime columns without rewriting full job config JSON. */

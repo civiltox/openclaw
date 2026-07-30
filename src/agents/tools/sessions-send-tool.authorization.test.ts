@@ -111,6 +111,81 @@ describe("sessions_send resolved-owner authorization", () => {
     expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
   });
 
+  it("fails closed when an older gateway resolves a session id to an ownerless sentinel", async () => {
+    gatewayCall.mockImplementation(
+      async (request: { method?: string; params?: { key?: string; sessionId?: string } }) => {
+        if (request.method !== "sessions.resolve") {
+          return {};
+        }
+        if (request.params?.key) {
+          throw new Error("not a session key");
+        }
+        if (request.params?.sessionId) {
+          return { key: "global" };
+        }
+        return {};
+      },
+    );
+
+    const result = await createTool({ agentId: "other" }).execute("ownerless-id-sentinel", {
+      sessionKey: "b0d79b63-0f73-4bc9-a6b5-6d8e20f42c3c",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("Upgrade the gateway"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("keeps requester ownership for a literal global sentinel", async () => {
+    gatewayCall.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "agent") {
+        return { runId: "literal-global", acceptedAt: 1 };
+      }
+      return {};
+    });
+
+    const result = await createTool({ agentId: "other" }).execute("literal-global", {
+      sessionKey: "global",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result).status).toBe("accepted");
+    expect(gatewayCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent",
+        params: expect.objectContaining({ agentId: "other", sessionKey: "global" }),
+      }),
+    );
+  });
+
+  it("does not invent requester ownership when a label resolves to an ownerless sentinel", async () => {
+    gatewayCall.mockImplementation(
+      async (request: { method?: string; params?: { label?: string } }) => {
+        if (request.method === "sessions.resolve" && request.params?.label) {
+          return { key: "global" };
+        }
+        return {};
+      },
+    );
+
+    const result = await createTool({ agentId: "other" }).execute("ownerless-label-sentinel", {
+      label: "incident-room",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("target agent ownership is unavailable"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
   it("does not trust a caller-supplied agent for an ownerless bare key", async () => {
     gatewayCall.mockImplementation(async (request: { method?: string }) => {
       if (request.method === "sessions.resolve") {

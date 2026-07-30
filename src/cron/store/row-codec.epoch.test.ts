@@ -21,6 +21,7 @@ import {
   readCronRuntimeRevision,
   readCronStoreEpoch,
   replaceCronRows,
+  upsertCronJobRow,
   updateCronRuntimeRows,
 } from "./row-codec.js";
 
@@ -279,6 +280,81 @@ describe("cron store epoch", () => {
       expect(
         loadedCronStoreFromRows(loadCronRows(database, storeKey)).store.jobs[0]?.state,
       ).toEqual({});
+    } finally {
+      handle.walMaintenance.close();
+      database.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a stale runtime writer after a row upsert replaces runtime state", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-upsert-runtime-"));
+    const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });
+    const database = handle.db;
+    const storeKey = "upsert-runtime-revision";
+    const job = makeCronJob({ id: "upsert-runtime-job" });
+    try {
+      replaceCronRows(database, storeKey, { version: 1, jobs: [job] });
+      const staleRuntimeRevision = readCronRuntimeRevision(database, storeKey);
+      upsertCronJobRow(
+        database,
+        storeKey,
+        { ...job, state: { nextRunAtMs: job.updatedAtMs + 60_000 } },
+        0,
+      );
+      const currentRuntimeRevision = readCronRuntimeRevision(database, storeKey);
+
+      expect(currentRuntimeRevision).toBe(staleRuntimeRevision + 1);
+      expect(() =>
+        updateCronRuntimeRows(
+          database,
+          storeKey,
+          { version: 1, jobs: [{ ...job, state: {} }] },
+          {
+            expectedRuntimeRevision: staleRuntimeRevision,
+            currentRuntimeRevision,
+          },
+        ),
+      ).toThrow(CronRuntimeRevisionMismatchError);
+      expect(
+        loadedCronStoreFromRows(loadCronRows(database, storeKey)).store.jobs[0]?.state,
+      ).toEqual({ nextRunAtMs: job.updatedAtMs + 60_000 });
+    } finally {
+      handle.walMaintenance.close();
+      database.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back the row upsert when its runtime revision cannot advance", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-upsert-atomic-"));
+    const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });
+    const database = handle.db;
+    const storeKey = "upsert-atomic";
+    const job = makeCronJob({ id: "upsert-atomic-job" });
+    try {
+      replaceCronRows(database, storeKey, { version: 1, jobs: [job] });
+      const rowsBefore = loadCronRows(database, storeKey);
+      const runtimeRevisionBefore = readCronRuntimeRevision(database, storeKey);
+      database.exec(`
+        CREATE TRIGGER fail_cron_runtime_revision
+        BEFORE UPDATE OF store_epoch ON cron_store_epochs
+        WHEN NEW.store_key = 'runtime-revision:${storeKey}'
+        BEGIN
+          SELECT RAISE(ABORT, 'synthetic runtime revision failure');
+        END;
+      `);
+
+      expect(() =>
+        upsertCronJobRow(
+          database,
+          storeKey,
+          { ...job, state: { nextRunAtMs: job.updatedAtMs + 60_000 } },
+          0,
+        ),
+      ).toThrow("synthetic runtime revision failure");
+      expect(loadCronRows(database, storeKey)).toEqual(rowsBefore);
+      expect(readCronRuntimeRevision(database, storeKey)).toBe(runtimeRevisionBefore);
     } finally {
       handle.walMaintenance.close();
       database.close();

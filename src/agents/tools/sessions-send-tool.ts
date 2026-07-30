@@ -622,14 +622,22 @@ export function createSessionsSendTool(opts?: {
         !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)
           ? tryResolveLegacyCompatibilityAgentId(cfg)
           : undefined;
+      const mayUseRequesterForLiteralSentinel =
+        !labelParam &&
+        sessionKeyParam !== undefined &&
+        isUnscopedSessionKeySentinel(sessionKeyParam.trim());
       const targetAgentId =
         visibleSession.agentId ??
         resolvedTargetAgentId ??
         resolvedKeyAgentId ??
         (labelParam && labelAgentIdParam ? normalizeAgentId(labelAgentIdParam) : undefined) ??
-        (isUnscopedSessionKeySentinel(resolvedKey) ? requesterAgentId : undefined) ??
+        (mayUseRequesterForLiteralSentinel ? requesterAgentId : undefined) ??
         compatibilityTargetAgentId;
-      if (!targetAgentId && !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)) {
+      if (
+        !targetAgentId &&
+        !resolvedKeyAgentId &&
+        (!isUnscopedSessionKeySentinel(resolvedKey) || resolvedSession.resolvedViaSessionId)
+      ) {
         return jsonResult({
           runId: crypto.randomUUID(),
           status: "forbidden",

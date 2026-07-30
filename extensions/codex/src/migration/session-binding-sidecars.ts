@@ -5,6 +5,7 @@ import {
   listAgentIds,
   resolveAgentDir,
   resolveSessionAgentIds,
+  tryResolveSoleAgentId,
 } from "openclaw/plugin-sdk/agent-runtime";
 import { withFileLock, type FileLockOptions } from "openclaw/plugin-sdk/file-lock";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -145,7 +146,7 @@ async function collectSessionSurfaces(params: MigrationEnvironment): Promise<Ses
   }
 
   const legacyRoot = path.join(params.stateDir, "sessions");
-  const migrationAgentId = params.context.migrationAgentId;
+  const migrationAgentId = params.context.migrationAgentId ?? tryResolveSoleAgentId(params.config);
   if (migrationAgentId) {
     await add(legacyRoot, path.join(legacyRoot, "sessions.json"), migrationAgentId, true);
   }

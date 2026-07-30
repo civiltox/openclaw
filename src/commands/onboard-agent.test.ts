@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { tryGetLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { defaultRuntime } from "../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -147,13 +148,17 @@ describe("onboarding main-agent creation", () => {
   it("preserves an explicit imported candidate roster", async () => {
     const config = { agents: { list: [{ id: "main", default: true }] } };
 
-    await expect(
-      ensureOnboardingAgent({
-        config,
-        workspace: "/tmp/work",
-        preserveCandidateRoster: true,
-      }),
-    ).resolves.toEqual({ config, agentId: "main", bootstrapPending: false });
+    const result = await ensureOnboardingAgent({
+      config,
+      workspace: "/tmp/work",
+      preserveCandidateRoster: true,
+    });
+
+    expect(result).toEqual({
+      config: { agents: { entries: { main: {} } } },
+      agentId: "main",
+      bootstrapPending: false,
+    });
     expect(mocks.readConfigFileSnapshot).not.toHaveBeenCalled();
     expect(mocks.createAgent).not.toHaveBeenCalled();
   });
@@ -194,6 +199,35 @@ describe("onboarding main-agent creation", () => {
 
     expect(result.agentId).toBe("research");
     expect(result.config.agents?.ownership).toBe("explicit");
+  });
+
+  it("materializes a preserved legacy list before stamping explicit ownership", async () => {
+    const result = await ensureOnboardingAgent({
+      config: {
+        agents: { list: [{ id: "ops" }, { id: "research" }] },
+        channels: { telegram: { enabled: true } },
+        session: { store: "/tmp/shared-sessions.json" },
+      },
+      workspace: "/tmp/work",
+      preserveCandidateRoster: true,
+      agentId: "ops",
+    });
+
+    expect(result.config).toMatchObject({
+      agents: {
+        ownership: "explicit",
+        entries: { ops: {}, research: {} },
+        defaults: {
+          heartbeat: { agentId: "ops" },
+          systemAgent: { agentId: "ops" },
+          authInheritance: { agentId: "ops" },
+          sessionStore: { agentId: "ops" },
+        },
+      },
+      bindings: [{ agentId: "ops", match: { channel: "telegram", accountId: "*" } }],
+      talk: { agentId: "ops" },
+    });
+    expect(tryGetLegacyDefaultAgentId(result.config)).toBe("ops");
   });
 
   it("prompts for a preserved multi-agent roster in interactive mode", async () => {

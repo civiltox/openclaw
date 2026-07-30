@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { saveCronJobsStore } from "../cron/store.js";
+import { readRetainedLegacyDefaultCronOwnerForStore } from "../cron/legacy-default-agent-owner-handoff.js";
+import { registerLiveCronService } from "../cron/live-service-registry.js";
+import { loadCronJobsStoreWithConfigJobsReadOnly, saveCronJobsStore } from "../cron/store.js";
 import type { CronJob } from "../cron/types.js";
 import { createConfigIO, resetConfigRuntimeState } from "./io.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
@@ -93,7 +95,7 @@ async function createStoreSwitchFixture(
       preservedLegacyRootKeys: ["cron"],
       ...(preCommitRuntimePreflight ? { preCommitRuntimePreflight } : {}),
     });
-  return { configPath, destinationStorePath: targetStorePath, env, write };
+  return { configPath, destinationStorePath: targetStorePath, env, io, write };
 }
 
 describe("cron store switch ownership guard", () => {
@@ -249,6 +251,115 @@ describe("cron store switch ownership guard", () => {
         );
       }),
     ).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
+  });
+
+  it("leaves cron rows and receipts unchanged when the base snapshot loses the commit race", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    const before = await loadCronJobsStoreWithConfigJobsReadOnly(
+      fixture.destinationStorePath,
+      fixture.env,
+    );
+    const receiptBefore = readRetainedLegacyDefaultCronOwnerForStore(
+      fixture.destinationStorePath,
+      fixture.env,
+    );
+
+    await expect(
+      fixture.write(async () => {
+        await fs.writeFile(
+          fixture.configPath,
+          `${JSON.stringify({
+            agents: {
+              ownership: "explicit",
+              entries: { research: {}, writer: {} },
+            },
+            cron: { store: fixture.destinationStorePath },
+          })}\n`,
+          "utf8",
+        );
+      }),
+    ).rejects.toThrow("config changed since last load");
+
+    await expect(
+      loadCronJobsStoreWithConfigJobsReadOnly(fixture.destinationStorePath, fixture.env),
+    ).resolves.toEqual(before);
+    expect(
+      readRetainedLegacyDefaultCronOwnerForStore(fixture.destinationStorePath, fixture.env),
+    ).toBe(receiptBefore);
+  });
+
+  it("keeps a concurrent config writer behind the cron handoff commit fence", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    let markHandoffStarted = () => {};
+    const handoffStarted = new Promise<void>((resolve) => {
+      markHandoffStarted = resolve;
+    });
+    let releaseHandoff = () => {};
+    const handoffMayFinish = new Promise<void>((resolve) => {
+      releaseHandoff = resolve;
+    });
+    const registration = registerLiveCronService(fixture.destinationStorePath, {
+      beginLegacyDefaultAgentOwnerHandoff: async () => {
+        markHandoffStarted();
+        await handoffMayFinish;
+        return { migration: { changes: [], warnings: [] }, release: () => {} };
+      },
+      refreshLegacyDefaultAgentOwnerHandoff: async () => {},
+    });
+
+    try {
+      const firstWrite = fixture.write();
+      await handoffStarted;
+      const concurrentSnapshot = await fixture.io.readConfigFileSnapshot();
+      const concurrentWrite = fixture.io.writeConfigFile(
+        { ...concurrentSnapshot.config, gateway: { mode: "local", port: 19_001 } },
+        { baseSnapshot: concurrentSnapshot, preservedLegacyRootKeys: ["cron"] },
+      );
+      let concurrentOutcome: unknown;
+      void concurrentWrite.then(
+        (value) => {
+          concurrentOutcome = { status: "resolved", value };
+        },
+        (error: unknown) => {
+          concurrentOutcome = { status: "rejected", error };
+        },
+      );
+      await new Promise((resolve) => {
+        setTimeout(resolve, 25);
+      });
+      expect(concurrentOutcome).toBeUndefined();
+
+      releaseHandoff();
+      await expect(firstWrite).resolves.toBeDefined();
+      await expect(concurrentWrite).rejects.toThrow("config changed since last load");
+      const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
+      expect(Object.keys(persisted.agents?.entries ?? {}).toSorted()).toEqual(["ops", "research"]);
+      expect(persisted.agents?.ownership).toBe("explicit");
+      expect(persisted.gateway).toBeUndefined();
+    } finally {
+      releaseHandoff();
+      registration.unregister();
+    }
   });
 
   it("retains a removed sole agent as the fixed-session-store compatibility owner", async () => {

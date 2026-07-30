@@ -2,10 +2,7 @@ import type fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { listAgentEntries, tryResolveDefaultAgentId } from "../agents/agent-scope-config.js";
-import { isVerbose } from "../global-state.js";
-import { isVitestRuntimeEnv } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { replaceFileAtomic } from "../infra/replace-file.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { pinSoleAgentWorkspaceForFleetExpansion } from "./agent-workspace-ownership.js";
 import { maintainConfigBackups } from "./backup-rotation.js";
@@ -33,7 +30,6 @@ import {
   capConfigAuditPaths,
   createConfigWriteAuditRecordBase,
   finalizeConfigWriteAuditRecord,
-  formatConfigOverwriteLogMessage,
   type ConfigWriteAuditResult,
 } from "./io.audit.js";
 import type { ConfigIoContext } from "./io.context.js";
@@ -58,7 +54,13 @@ import type {
 } from "./io.types.js";
 import { ConfigRuntimeRefreshError, configWritePostCommitRollback } from "./io.types.js";
 import { logConfigWarningsOnce } from "./io.warnings.js";
+import {
+  commitConfigFileWrite,
+  createWorkspacePluginDirectory,
+  removeEmptyWorkspacePluginDirectories,
+} from "./io.write-commit.js";
 import { formatConfigValidationFailure } from "./io.write-errors.js";
+import { createConfigWriteLoggers } from "./io.write-logging.js";
 import {
   hasIncludedGatewayModeOwner,
   hasOwnIncludeDirective,
@@ -342,14 +344,21 @@ export async function writeConfigFileFromContext(
   const validationCandidate = containsConfigIncludeDirective(validationSourceCandidate)
     ? context.resolveRuntimePreflightSourceConfig(validationSourceCandidate as OpenClawConfig)
     : validationSourceCandidate;
-  if (workspacePin.pluginPath) {
-    await deps.fs.promises.mkdir(workspacePin.pluginPath, { recursive: true, mode: 0o700 });
+  const validationWorkspacePluginDirectories = workspacePin.pluginPath
+    ? await createWorkspacePluginDirectory(deps.fs, workspacePin.pluginPath)
+    : [];
+  let validated: ReturnType<typeof validateConfigObjectRawWithPlugins>;
+  try {
+    validated = validateConfigObjectRawWithPlugins(validationCandidate, {
+      env: deps.env,
+      pluginValidation: options.skipPluginValidation ? "skip" : "full",
+      preservedLegacyRootKeys: options.preservedLegacyRootKeys,
+    });
+  } finally {
+    // The path exists only for plugin discovery here. Recreate it at the commit
+    // edge so a later validation or preflight failure leaves no directory behind.
+    await removeEmptyWorkspacePluginDirectories(deps.fs, validationWorkspacePluginDirectories);
   }
-  const validated = validateConfigObjectRawWithPlugins(validationCandidate, {
-    env: deps.env,
-    pluginValidation: options.skipPluginValidation ? "skip" : "full",
-    preservedLegacyRootKeys: options.preservedLegacyRootKeys,
-  });
   if (!validated.ok) {
     const issue = validated.issues[0];
     throw new Error(
@@ -460,46 +469,17 @@ export async function writeConfigFileFromContext(
     gatewayModeAfter,
   });
 
-  const readTestLogFlag = (name: string) => isVitestRuntimeEnv(deps.env) && deps.env[name] === "1";
-  const logConfigOverwrite = () => {
-    if (
-      !snapshot.exists ||
-      options.skipOutputLogs ||
-      (isVitestRuntimeEnv(deps.env) && !readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG"))
-    ) {
-      return;
-    }
-    const testLog = readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG");
-    if (!isVerbose() && deps.env.OPENCLAW_CONFIG_OVERWRITE_LOG !== "1" && !testLog) {
-      return;
-    }
-    deps.logger.warn(
-      formatConfigOverwriteLogMessage({
-        configPath,
-        previousHash: previousHash ?? null,
-        nextHash,
-        changedPathCount,
-      }),
-    );
-  };
-  const logConfigWriteAnomalies = () => {
-    const testLog = readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG");
-    if (
-      suspiciousReasons.length === 0 ||
-      options.skipOutputLogs ||
-      (isVitestRuntimeEnv(deps.env) && !testLog)
-    ) {
-      return;
-    }
-    const showMissingMeta =
-      isVerbose() || deps.env.OPENCLAW_CONFIG_WRITE_ANOMALY_LOG === "1" || testLog;
-    const visibleReasons = showMissingMeta
-      ? suspiciousReasons
-      : suspiciousReasons.filter((reason) => reason !== "missing-meta-before-write");
-    if (visibleReasons.length > 0) {
-      deps.logger.warn(`Config write anomaly: ${configPath} (${visibleReasons.join(", ")})`);
-    }
-  };
+  const { logConfigOverwrite, logConfigWriteAnomalies } = createConfigWriteLoggers({
+    changedPathCount,
+    configPath,
+    env: deps.env,
+    existsBefore: snapshot.exists,
+    logger: deps.logger,
+    nextHash,
+    previousHash: previousHash ?? null,
+    skipOutputLogs: options.skipOutputLogs,
+    suspiciousReasons,
+  });
 
   const auditRecordBase = createConfigWriteAuditRecordBase({
     configPath,
@@ -570,29 +550,21 @@ export async function writeConfigFileFromContext(
   await preCommitRuntimePreflight(sourceConfigForPreflight);
 
   let releaseCronHandoffs: (() => void) | undefined;
+  let createdWorkspacePluginDirectories: string[] = [];
+  let configCommitted = false;
   try {
-    if (cronHandoffAgentId) {
-      const prepared = await prepareLegacyCronOwnerHandoffs({
-        env: deps.env,
-        legacyDefaultAgentId: cronHandoffAgentId,
-        targets: cronStoreWritePlan.targets,
-      });
-      releaseCronHandoffs = prepared.release;
-    }
-    const result = await replaceFileAtomic({
-      filePath: configPath,
+    const result = await commitConfigFileWrite({
+      configPath,
       content: json,
-      dirMode: 0o700,
-      mode: 0o600,
-      tempPrefix: path.basename(configPath),
-      copyFallbackOnPermissionError: true,
-      fileSystem: deps.fs,
+      fsModule: deps.fs,
       beforeRename: async () => {
         options.assertConfigPathForWrite?.();
         if (options.baseSnapshot) {
           assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
         }
         if (deps.fs.existsSync(configPath)) {
+          // Backup rotation is fallible and must precede the irreversible cron handoff.
+          // Moving it later can leave cron ownership committed when backup creation fails.
           await maintainConfigBackups(configPath, deps.fs.promises);
         }
         if (cronStoreWritePlan.recheckExplicitDestination) {
@@ -600,20 +572,37 @@ export async function writeConfigFileFromContext(
           // honor a new fence, so this protects only the inspected ownership boundary.
           await cronStoreWritePlan.recheckExplicitDestination();
         }
-        if (options.baseSnapshot) {
-          // This must follow every awaited guard so a concurrent config writer wins.
-          assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
+        if (workspacePin.pluginPath) {
+          createdWorkspacePluginDirectories = await createWorkspacePluginDirectory(
+            deps.fs,
+            workspacePin.pluginPath,
+          );
         }
-        options.assertConfigPathForWrite?.();
-        // Warn only after final guards pass, with no later await before rename.
+        // Emit the warning before the final conflict guard. After that guard, the
+        // cron handoff is the last fallible operation before the atomic rename.
         warnIfJSON5CommentsWillBeStripped({
           raw: snapshot.raw,
           filePath: configPath,
           warn: (message) => deps.logger.warn(message),
           skipOutputLogs: options.skipOutputLogs,
         });
+        options.assertConfigPathForWrite?.();
+        if (options.baseSnapshot) {
+          // Cooperating writers share the commit lock through handoff and rename. A
+          // post-handoff check would detect outsiders only after cron became durable.
+          assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
+        }
+        if (cronHandoffAgentId) {
+          const prepared = await prepareLegacyCronOwnerHandoffs({
+            env: deps.env,
+            legacyDefaultAgentId: cronHandoffAgentId,
+            targets: cronStoreWritePlan.targets,
+          });
+          releaseCronHandoffs = prepared.release;
+        }
       },
     });
+    configCommitted = true;
     try {
       options.assertConfigPathForWrite?.();
     } catch (error) {
@@ -630,6 +619,7 @@ export async function writeConfigFileFromContext(
           { cause: error },
         );
       }
+      configCommitted = false;
       throw error;
     }
     try {
@@ -715,6 +705,9 @@ export async function writeConfigFileFromContext(
       },
     };
   } catch (error) {
+    if (!configCommitted) {
+      await removeEmptyWorkspacePluginDirectories(deps.fs, createdWorkspacePluginDirectories);
+    }
     await appendWriteAudit("failed", error);
     throw error;
   } finally {

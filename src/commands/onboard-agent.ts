@@ -2,6 +2,8 @@
 import { createAgent } from "../agents/agent-create.js";
 import { listAgentEntries, toAgentEntriesRecord } from "../agents/agent-scope-config.js";
 import { readConfigFileSnapshot } from "../config/config.js";
+import { inheritLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
+import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import { createMergePatch } from "../config/merge-patch.js";
 import { applyMergePatch } from "../config/merge-patch.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -68,13 +70,17 @@ export async function ensureOnboardingAgent(params: EnsureOnboardingAgentParams)
     !params.candidateRosterIsStagedFirstAgent &&
     (params.preserveCandidateRoster || !isInjectedMainRoster(params.config))
   ) {
-    const config =
+    const migratedConfig = migratePersistedImplicitMainRoster(params.config)
+      .config as OpenClawConfig;
+    const config = inheritLegacyDefaultAgentId(
+      migratedConfig,
       candidateRoster.length > 1
         ? {
-            ...params.config,
-            agents: { ...params.config.agents, ownership: "explicit" as const },
+            ...migratedConfig,
+            agents: { ...migratedConfig.agents, ownership: "explicit" as const },
           }
-        : params.config;
+        : migratedConfig,
+    );
     return {
       config,
       agentId: await resolveCliAgentId({
