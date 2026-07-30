@@ -68,7 +68,7 @@ export function redactOpaqueValuesInText(
   return redacted;
 }
 
-export type OpaqueValueJsonRedactionOptions = {
+type OpaqueValueJsonRedactionOptions = {
   /** Preserve property names for callers that still need to inspect a known payload shape. */
   redactKeys?: boolean;
 };
