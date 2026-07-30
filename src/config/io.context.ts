@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { collectManifestModelIdNormalizationPolicies } from "@openclaw/model-catalog-core/provider-model-id-normalization";
 import { ensureOwnerDisplaySecret } from "../agents/owner-display.js";
-import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import {
   loadShellEnvFallback,
   resolveShellEnvFallbackTimeoutMs,
@@ -9,15 +8,12 @@ import {
   shouldEnableShellEnvFallback,
 } from "../infra/shell-env.js";
 import { createConfigValidationMetadataPluginIdScope } from "../plugins/gateway-startup-plugin-ids.js";
-import {
-  resolvePluginMetadataSnapshot,
-  type PluginMetadataSnapshot,
-} from "../plugins/plugin-metadata-snapshot.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { DuplicateAgentDirError, findDuplicateAgentDirs } from "./agent-dirs.js";
 import { applyConfigEnvVars, cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { observeConfigSnapshotSync } from "./io.observe.js";
 import { retainGeneratedOwnerDisplaySecret } from "./io.owner-display-secret.js";
-import { mergeValidationPluginMetadataSnapshots } from "./io.plugin-metadata.js";
+import { resolveConfigWidePluginMetadataSnapshot } from "./io.plugin-metadata.js";
 import {
   coerceConfig,
   normalizeConfigIoDeps,
@@ -108,23 +104,14 @@ export function createConfigIoContext(options: ConfigIoFactoryOptions = {}): Con
           return snapshot;
         }
         const metadataConfig = config;
-        const workspaceDirs = listAgentWorkspaceDirs(metadataConfig, params.env);
-        const scopes: Array<string | undefined> =
-          workspaceDirs.length > 0 ? workspaceDirs : [undefined];
-        snapshot = mergeValidationPluginMetadataSnapshots(
-          scopes.map((workspaceDir) =>
-            resolvePluginMetadataSnapshot({
-              config: metadataConfig,
-              ...(workspaceDir ? { workspaceDir } : {}),
-              env: params.env,
-              allowWorkspaceScopedCurrent: true,
-              pluginIdScope: createConfigValidationMetadataPluginIdScope({
-                config: metadataConfig,
-                env: params.env,
-              }),
-            }),
-          ),
-        );
+        snapshot = resolveConfigWidePluginMetadataSnapshot({
+          config: metadataConfig,
+          env: params.env,
+          pluginIdScope: createConfigValidationMetadataPluginIdScope({
+            config: metadataConfig,
+            env: params.env,
+          }),
+        });
         return snapshot;
       },
       getSnapshot: () => snapshot,

@@ -347,6 +347,28 @@ describe("runGuidedOnboarding", () => {
     expect(deps.launchHatchTui).toHaveBeenCalledWith("/tmp/openclaw-workspace");
   });
 
+  it("treats the injected main roster as fresh when --agent creates the first agent", async () => {
+    const syntheticConfig = { agents: { entries: { main: {} } } } satisfies OpenClawConfig;
+    readConfigFileSnapshot.mockResolvedValue({
+      exists: false,
+      valid: true,
+      path: "/tmp/openclaw.json",
+      issues: [],
+      sourceConfigBeforeMigrations: {},
+      sourceConfig: syntheticConfig,
+      runtimeConfig: syntheticConfig,
+      config: syntheticConfig,
+    });
+    const prompter = createWizardPrompter();
+    const deps = setupDeps({ prompter });
+
+    await runGuidedOnboarding({ acceptRisk: true, agent: "ops" }, makeRuntime(), deps);
+
+    expect(deps.detect).toHaveBeenCalledWith({ targetAgentId: "ops" });
+    const { ensureOnboardingAgent } = await import("./onboard-agent.js");
+    expect(ensureOnboardingAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: "ops" }));
+  });
+
   it("live-tests an unverified CLI before automatic setup", async () => {
     const unverified = {
       ...candidate("claude-cli", "Claude Code"),

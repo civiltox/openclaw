@@ -1,4 +1,10 @@
+import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
+import {
+  resolvePluginMetadataSnapshot,
+  type PluginMetadataSnapshotPluginIdScope,
+} from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import type { OpenClawConfig } from "./types.openclaw.js";
 
 /** Merges validation metadata from every configured agent workspace. */
 export function mergeValidationPluginMetadataSnapshots(
@@ -49,4 +55,26 @@ export function mergeValidationPluginMetadataSnapshots(
     manifestRegistry: { plugins, diagnostics },
     byPluginId: new Map(plugins.map((plugin) => [first.normalizePluginId(plugin.id), plugin])),
   };
+}
+
+/** Resolves one conflict-checked metadata snapshot across all agent workspaces. */
+export function resolveConfigWidePluginMetadataSnapshot(params: {
+  config: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  pluginIdScope?: PluginMetadataSnapshotPluginIdScope;
+}): PluginMetadataSnapshot {
+  const env = params.env ?? process.env;
+  const workspaceDirs = listAgentWorkspaceDirs(params.config, env);
+  const scopes: Array<string | undefined> = workspaceDirs.length > 0 ? workspaceDirs : [undefined];
+  return mergeValidationPluginMetadataSnapshots(
+    scopes.map((workspaceDir) =>
+      resolvePluginMetadataSnapshot({
+        config: params.config,
+        ...(workspaceDir ? { workspaceDir } : {}),
+        env,
+        allowWorkspaceScopedCurrent: true,
+        ...(params.pluginIdScope ? { pluginIdScope: params.pluginIdScope } : {}),
+      }),
+    ),
+  );
 }

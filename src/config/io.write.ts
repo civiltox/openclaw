@@ -143,7 +143,9 @@ export async function writeConfigFileFromContext(
       ? [["bindings"]]
       : [];
   const previousSoleAgentId = tryResolveDefaultAgentId(snapshot.config);
-  const previousAgentCount = listAgentEntries(snapshot.config).length;
+  const previousAgentEntries = listAgentEntries(snapshot.config);
+  const previousAgentCount = previousAgentEntries.length;
+  const previousAgentIds = new Set(previousAgentEntries.map((entry) => normalizeAgentId(entry.id)));
   const nextAgentEntries = listAgentEntries(nextConfig);
   const nextAgentIds = new Set(nextAgentEntries.map((entry) => normalizeAgentId(entry.id)));
   // Stamp topology transitions and retained legacy owners independently from sole-agent handoff.
@@ -247,10 +249,21 @@ export async function writeConfigFileFromContext(
   const sourceCronConfig = snapshot.sourceConfigBeforeMigrations ?? snapshot.config;
   const sourceStorePath = resolveCronJobsStorePathFromConfig(sourceCronConfig, deps.env);
   const destinationStorePath = resolveCronJobsStorePathFromConfig(nextConfig, deps.env);
+  const rosterMembershipChanged =
+    previousAgentIds.size !== nextAgentIds.size ||
+    [...previousAgentIds].some((agentId) => !nextAgentIds.has(agentId));
+  const ownershipTopologyChanged =
+    writesOwnershipTopology ||
+    rosterMembershipChanged ||
+    snapshot.config.agents?.ownership !== nextConfig.agents?.ownership;
+  const publishesExplicitOwnership =
+    persistOwnership ||
+    retainExplicitOwnership ||
+    (nextAgentEntries.length > 1 && nextConfig.agents?.ownership === "explicit");
   const guardExplicitCronStoreDestination =
-    (persistOwnership || retainExplicitOwnership) &&
+    publishesExplicitOwnership &&
     (sourceStorePath !== destinationStorePath ||
-      (writesOwnershipTopology && cronHandoffAgentId === undefined));
+      (ownershipTopologyChanged && cronHandoffAgentId === undefined));
   if (guardExplicitCronStoreDestination) {
     await assertCronStoreDestinationHasExplicitOwners({
       config: nextConfig,

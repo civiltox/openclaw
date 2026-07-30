@@ -2,20 +2,14 @@
 import { collectConfiguredModelRefs } from "@openclaw/model-catalog-core/configured-model-refs";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
-import {
-  listAgentEntriesWithSource,
-  tryResolveConfiguredAgentWorkspaceDir,
-} from "../agents/agent-scope.js";
+import { listAgentEntriesWithSource } from "../agents/agent-scope.js";
 import type { ChannelDmAllowFromMode } from "../channels/plugins/dm-access.js";
 import { planManifestModelCatalogSuppressions } from "../model-catalog/index.js";
 import { listChannelIdsForOwnershipMigration } from "../plugins/channel-presence-policy.js";
 import { normalizePluginsConfig, normalizePluginId } from "../plugins/config-state.js";
 import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-record-reader.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
-import {
-  resolvePluginMetadataSnapshot,
-  type PluginMetadataSnapshot,
-} from "../plugins/plugin-metadata-snapshot.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { validateJsonSchemaValue } from "../plugins/schema-validator.js";
 import { resolveWebSearchInstallCatalogEntries } from "../plugins/web-search-install-catalog.js";
 import { isRecord } from "../utils.js";
@@ -25,6 +19,7 @@ import {
   collectChannelDmPolicyMetadata,
   collectChannelSchemaMetadataWithOwnership,
 } from "./channel-config-metadata.js";
+import { resolveConfigWidePluginMetadataSnapshot } from "./io.plugin-metadata.js";
 import {
   appendLegacyOwnershipWarnings,
   inheritLegacyDefaultAgentId,
@@ -282,12 +277,9 @@ function validateConfigObjectWithPluginsBase(
       registryInfo = rememberRegistry(pluginMetadataSnapshot.manifestRegistry);
       return registryInfo;
     }
-    const workspaceDir = tryResolveConfiguredAgentWorkspaceDir(config, opts.env);
-    const registry = resolvePluginMetadataSnapshot({
+    const registry = resolveConfigWidePluginMetadataSnapshot({
       config,
-      workspaceDir: workspaceDir ?? undefined,
       env: opts.env ?? process.env,
-      allowWorkspaceScopedCurrent: true,
     }).manifestRegistry;
     registryInfo = rememberRegistry(registry);
     return registryInfo;

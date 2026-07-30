@@ -189,7 +189,11 @@ async function runGuidedOnboardingFlow(
   }
 
   const agentSelectionConfig = snapshot.runtimeConfig ?? snapshot.config;
-  const configuredAgents = listAgentEntries(agentSelectionConfig);
+  const authoredAgentConfig =
+    snapshot.sourceConfigBeforeMigrations ??
+    (snapshot.exists ? (snapshot.sourceConfig ?? snapshot.config) : {});
+  const configuredAgents =
+    listAgentEntries(authoredAgentConfig).length > 0 ? listAgentEntries(agentSelectionConfig) : [];
   const selectedAgentId =
     configuredAgents.length === 0
       ? normalizeAgentId(opts.agent?.trim() || "main")

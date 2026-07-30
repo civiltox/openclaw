@@ -38,6 +38,7 @@ async function createStoreSwitchFixture(
     entries: { ops: {}, research: {} },
   },
   options: {
+    declarePaths?: boolean;
     nextAgents?: OpenClawConfig["agents"];
     sessionStore?: string;
     switchStore?: boolean;
@@ -82,7 +83,9 @@ async function createStoreSwitchFixture(
   const write = (preCommitRuntimePreflight?: () => Promise<void>) =>
     io.writeConfigFile(nextConfig, {
       baseSnapshot: snapshot,
-      explicitSetPaths: [options.nextAgents ? ["agents"] : ["cron"]],
+      ...(options.declarePaths === false
+        ? {}
+        : { explicitSetPaths: [options.nextAgents ? ["agents"] : ["cron"]] }),
       explicitSetValueSource: nextConfig,
       ...(allowedAgentRosterRemovals.length > 0 ? { allowedAgentRosterRemovals } : {}),
       preservedLegacyRootKeys: ["cron"],
@@ -94,6 +97,22 @@ async function createStoreSwitchFixture(
 describe("cron store switch ownership guard", () => {
   it("refuses an explicit-roster switch to ownerless destination jobs", async () => {
     const fixture = await createStoreSwitchFixture([cronJob("ownerless")]);
+
+    await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
+  });
+
+  it("refuses an undeclared full-config switch to explicit ownership and ownerless jobs", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {}, research: {} } },
+      {
+        declarePaths: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
 
     await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
   });
