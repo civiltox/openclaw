@@ -501,6 +501,28 @@ describe("applySystemAgentSetup transaction boundaries", () => {
     expect(mocks.state.persistedConfig?.agents?.defaults?.model).toBe("openai/gpt-5.5");
   });
 
+  it("rejects a non-main setup target when no roster is authored", async () => {
+    const config = {} satisfies OpenClawConfig;
+    mocks.state.initialSnapshot = snapshot("probe", config);
+    mocks.state.commitConfig = structuredClone(config);
+    mocks.state.commitSnapshot = snapshot("probe", config);
+
+    await expect(
+      applySystemAgentSetup(
+        baseParams({
+          targetAgentId: "ops",
+          expectedAgentId: "ops",
+          model: "openai/gpt-5.5",
+        }),
+      ),
+    ).rejects.toThrow(
+      'Cannot apply setup to agent "ops" because the config has no authored agent roster',
+    );
+
+    expect(mocks.state.persistedConfig).toBeUndefined();
+    expect(mocks.ensureWorkspace).not.toHaveBeenCalled();
+  });
+
   it("rejects an ownerless workspace-only setup before persisting the candidate", async () => {
     const config: OpenClawConfig = {
       agents: { ownership: "explicit", entries: { ops: {}, research: {} } },

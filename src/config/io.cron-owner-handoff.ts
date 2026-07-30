@@ -10,6 +10,37 @@ type CronOwnerHandoffTarget = {
   storePath: string;
 };
 
+function hasExplicitCronOwner(job: unknown): boolean {
+  if (!job || typeof job !== "object" || Array.isArray(job)) {
+    return false;
+  }
+  const agentId = (job as { agentId?: unknown }).agentId;
+  return typeof agentId === "string" && agentId.trim().length > 0;
+}
+
+/** Refuses a store switch that would publish ownerless jobs under explicit ownership. */
+export async function assertCronStoreDestinationHasExplicitOwners(params: {
+  storePath: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const { loadLegacyCronRepairState } = await import("../commands/doctor/cron/legacy-repair.js");
+  const state = await loadLegacyCronRepairState({
+    cfg: {},
+    storePath: params.storePath,
+    env: params.env,
+    readOnly: true,
+  });
+  const ownerlessJobs = (state?.rawJobs ?? []).filter((job) => !hasExplicitCronOwner(job));
+  if (ownerlessJobs.length === 0) {
+    return;
+  }
+  // Once explicit ownership publishes, no ambient owner remains to repair this store later.
+  // Refuse before the config points at it rather than silently orphaning scheduled work.
+  throw new Error(
+    `Config write refused: cron.store destination ${params.storePath} contains ${ownerlessJobs.length} ownerless legacy cron job(s). Assign every destination job an explicit agentId with openclaw cron edit, or repair the destination with openclaw doctor --fix while its legacy owner is still available, then retry the store change.`,
+  );
+}
+
 /** Seals and migrates every cron store until the config write commits or fails. */
 export async function prepareLegacyCronOwnerHandoffs(params: {
   env: NodeJS.ProcessEnv;

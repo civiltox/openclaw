@@ -30,11 +30,10 @@ export async function materializeCronJobsStoreOwners(params: {
       const decodedCurrentJobIds = new Set(
         loadedCronStoreFromRows(rows).store.jobs.map((job) => job.id),
       );
-      const persistedJobIds = new Set(
-        params.records
-          .filter((record) => decodedCurrentJobIds.has(record.id))
-          .map((record) => record.id),
-      );
+      // Current decodable rows are authoritative inside the transaction. Include rows
+      // inserted after the caller's snapshot, while absent rows stay deleted and raw
+      // undecodable rows remain outside the targeted update.
+      const persistedJobIds = decodedCurrentJobIds;
       // Both row helpers advance the partition epoch inside this outer transaction,
       // so stale full-store writers cannot overwrite ownership or imported rows.
       let rewritten = materializeCronRowAgentOwners(db, storeKey, params.legacyDefaultAgentId, {

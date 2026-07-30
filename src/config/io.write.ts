@@ -38,7 +38,10 @@ import {
   type ConfigWriteAuditResult,
 } from "./io.audit.js";
 import type { ConfigIoContext } from "./io.context.js";
-import { prepareLegacyCronOwnerHandoffs } from "./io.cron-owner-handoff.js";
+import {
+  assertCronStoreDestinationHasExplicitOwners,
+  prepareLegacyCronOwnerHandoffs,
+} from "./io.cron-owner-handoff.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
 import { assertAutomaticBindingsWriteAllowed } from "./io.ownership-write-guard.js";
 import {
@@ -220,13 +223,21 @@ export async function writeConfigFileFromContext(
         ? previousSoleHandoffAgentId
         : undefined;
   const cronHandoffTargets = new Map<string, OpenClawConfig>();
+  const sourceCronConfig = snapshot.sourceConfigBeforeMigrations ?? snapshot.config;
+  const sourceStorePath = resolveCronJobsStorePathFromConfig(sourceCronConfig, deps.env);
+  const destinationStorePath = resolveCronJobsStorePathFromConfig(nextConfig, deps.env);
+  const guardExplicitCronStoreDestination =
+    sourceStorePath !== destinationStorePath && (persistOwnership || retainExplicitOwnership);
+  if (guardExplicitCronStoreDestination) {
+    await assertCronStoreDestinationHasExplicitOwners({
+      storePath: destinationStorePath,
+      env: deps.env,
+    });
+  }
   if (cronHandoffAgentId) {
-    const sourceCronConfig = snapshot.sourceConfigBeforeMigrations ?? snapshot.config;
-    const sourceStorePath = resolveCronJobsStorePathFromConfig(sourceCronConfig, deps.env);
-    const destinationStorePath = resolveCronJobsStorePathFromConfig(nextConfig, deps.env);
     if (sourceStorePath !== destinationStorePath) {
       throw new Error(
-        `Config write refused: cron ownership migration cannot be committed atomically while cron.store changes from ${sourceStorePath} to ${destinationStorePath}. Apply the agent ownership migration first, then change cron.store in a separate config write.`,
+        `Config write refused: cron ownership migration cannot be committed atomically while cron.store changes from ${sourceStorePath} to ${destinationStorePath}. Keep cron.store unchanged while ownership is materialized; before a later store-only switch, assign explicit agentId values to every destination job because the explicit roster has no ambient fallback owner.`,
       );
     }
     cronHandoffTargets.set(sourceStorePath, sourceCronConfig);
@@ -566,7 +577,17 @@ export async function writeConfigFileFromContext(
         if (deps.fs.existsSync(configPath)) {
           await maintainConfigBackups(configPath, deps.fs.promises);
         }
+        if (guardExplicitCronStoreDestination) {
+          // The destination is inactive under this config until rename. Recheck its
+          // effective rows at the commit edge; external old-code writers cannot honor
+          // a new fence, so this intentionally protects the inspected switch boundary.
+          await assertCronStoreDestinationHasExplicitOwners({
+            storePath: destinationStorePath,
+            env: deps.env,
+          });
+        }
         if (options.baseSnapshot) {
+          // This must follow every awaited guard so a concurrent config writer wins.
           assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
         }
         options.assertConfigPathForWrite?.();

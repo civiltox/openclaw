@@ -19,7 +19,7 @@ import type { AgentModelEntryConfig } from "../config/types.agent-defaults.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { enablePluginInConfig } from "../plugins/enable.js";
-import { normalizeAgentId } from "../routing/session-key.js";
+import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
@@ -458,8 +458,15 @@ export async function applySystemAgentSetup(
       allowWorkspaceChange: allowWorkspaceWrite,
       preserveWorkspace,
     });
+    const candidateHasRoster = hasAgentRosterProperty(candidate);
+    if (!candidateHasRoster && setupAgentId && setupAgentId !== LEGACY_IMPLICIT_AGENT_ID) {
+      throw new Error(
+        `Cannot apply setup to agent "${setupAgentId}" because the config has no authored agent roster. Create that agent before selecting it for setup.`,
+      );
+    }
     if (model) {
-      const modelSelectionAgentId = hasAgentRosterProperty(candidate) ? setupAgentId : undefined;
+      // Only the validated physical-main bootstrap may intentionally omit a target.
+      const modelSelectionAgentId = candidateHasRoster ? setupAgentId : undefined;
       candidate = await applySystemAgentModelSelection({
         config: candidate,
         model,

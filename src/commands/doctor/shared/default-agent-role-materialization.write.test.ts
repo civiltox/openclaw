@@ -884,9 +884,7 @@ describe("default role materialization authored writes", () => {
         explicitSetValueSource: nextConfig,
         preservedLegacyRootKeys: ["cron"],
       }),
-    ).rejects.toThrow(
-      "cron ownership migration cannot be committed atomically while cron.store changes",
-    );
+    ).rejects.toThrow("cron.store destination");
 
     expect(await fs.readFile(configPath, "utf-8")).toBe(configBefore);
     expect(
