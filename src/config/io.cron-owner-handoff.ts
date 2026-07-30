@@ -32,7 +32,7 @@ function resolveExplicitCronOwner(job: unknown): string | undefined {
 }
 
 /** Refuses a store switch that would publish ownerless jobs under explicit ownership. */
-export async function assertCronStoreDestinationHasExplicitOwners(params: {
+async function assertCronStoreDestinationHasExplicitOwners(params: {
   config: OpenClawConfig;
   storePath: string;
   env: NodeJS.ProcessEnv;
