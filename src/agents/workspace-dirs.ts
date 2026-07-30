@@ -10,14 +10,17 @@ import { tryResolveSoleAgentId } from "./agent-scope-config.js";
 import { listAgentEntries, resolveAgentWorkspaceDir } from "./agent-scope.js";
 
 /** Lists unique workspace directories for every configured agent or the implicit sole agent. */
-export function listAgentWorkspaceDirs(cfg: OpenClawConfig): string[] {
+export function listAgentWorkspaceDirs(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
   const dirs = new Set<string>();
   for (const entry of listAgentEntries(cfg)) {
-    dirs.add(resolveAgentWorkspaceDir(cfg, entry.id));
+    dirs.add(resolveAgentWorkspaceDir(cfg, entry.id, env));
   }
   const soleAgentId = tryResolveSoleAgentId(cfg);
   if (soleAgentId) {
-    dirs.add(resolveAgentWorkspaceDir(cfg, soleAgentId));
+    dirs.add(resolveAgentWorkspaceDir(cfg, soleAgentId, env));
   }
   return [...dirs];
 }

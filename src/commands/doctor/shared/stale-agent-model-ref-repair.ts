@@ -5,15 +5,15 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   listAgentEntries,
   resolveAgentDir,
-  tryResolveConfiguredAgentWorkspaceDir,
+  resolveAgentWorkspaceDir,
   tryResolveDefaultAgentId,
 } from "../../../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../../../agents/defaults.js";
 import { normalizeProviderId } from "../../../agents/model-selection.js";
 import type { AgentModelConfig } from "../../../config/types.agents-shared.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { resolvePluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.js";
 import { listMutableCodexRouteAgentEntries } from "./codex-route-agent-entries.js";
+import { resolveDoctorPluginMetadataSnapshots } from "./plugin-metadata-snapshots.js";
 
 type StaleAgentModelRefRepair = {
   config: OpenClawConfig;
@@ -27,6 +27,12 @@ type RepairOptions = {
   pluginProviderIds?: ReadonlySet<string>;
   /** Test seam for provider ids already present in each agent's models.json. */
   persistedProviderIdsByAgentId?: ReadonlyMap<string, ReadonlySet<string>>;
+};
+
+type PluginProviderInventory = {
+  providerIdsByWorkspace?: Map<string, Set<string>>;
+  fallbackProviderIds?: Set<string>;
+  warnings: string[];
 };
 
 const DEFAULT_MODEL_REF = `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`;
@@ -44,22 +50,22 @@ function providerFromModelRef(ref: string): string | undefined {
 function collectPluginProviderIds(
   cfg: OpenClawConfig,
   options: RepairOptions,
-): { providerIds?: Set<string>; warnings: string[] } {
+): PluginProviderInventory {
   if (options.pluginProviderIds) {
     return {
-      providerIds: new Set([...options.pluginProviderIds].map(normalizeProviderId).filter(Boolean)),
+      fallbackProviderIds: new Set(
+        [...options.pluginProviderIds].map(normalizeProviderId).filter(Boolean),
+      ),
       warnings: [],
     };
   }
 
-  const workspaceDir = tryResolveConfiguredAgentWorkspaceDir(cfg, options.env);
-  const snapshot = resolvePluginMetadataSnapshot({
-    config: cfg,
-    workspaceDir: workspaceDir ?? undefined,
-    env: options.env ?? process.env,
-    allowWorkspaceScopedCurrent: true,
-  });
-  if (snapshot.diagnostics.some((diagnostic) => diagnostic.level === "error")) {
+  const snapshots = resolveDoctorPluginMetadataSnapshots(cfg, options.env ?? process.env);
+  if (
+    snapshots.some(({ metadata }) =>
+      metadata.diagnostics.some((diagnostic) => diagnostic.level === "error"),
+    )
+  ) {
     return {
       warnings: [
         "Skipped stale agent model reference repair because plugin discovery reported errors.",
@@ -67,21 +73,35 @@ function collectPluginProviderIds(
     };
   }
 
-  const providerIds = new Set<string>();
-  for (const owners of [
-    snapshot.owners.providers,
-    snapshot.owners.modelCatalogProviders,
-    snapshot.owners.setupProviders,
-    snapshot.owners.cliBackends,
-  ]) {
-    for (const providerId of owners.keys()) {
-      const normalized = normalizeProviderId(providerId);
-      if (normalized) {
-        providerIds.add(normalized);
+  const providerIdsByWorkspace = new Map<string, Set<string>>();
+  let fallbackProviderIds: Set<string> | undefined;
+  for (const { workspaceDir, metadata } of snapshots) {
+    const providerIds = new Set<string>();
+    for (const owners of [
+      metadata.owners.providers,
+      metadata.owners.modelCatalogProviders,
+      metadata.owners.setupProviders,
+      metadata.owners.cliBackends,
+    ]) {
+      for (const providerId of owners.keys()) {
+        const normalized = normalizeProviderId(providerId);
+        if (normalized) {
+          providerIds.add(normalized);
+        }
       }
     }
+    if (workspaceDir) {
+      providerIdsByWorkspace.set(workspaceDir, providerIds);
+    }
+    fallbackProviderIds = fallbackProviderIds
+      ? new Set([...fallbackProviderIds].filter((providerId) => providerIds.has(providerId)))
+      : new Set(providerIds);
   }
-  return { providerIds, warnings: [] };
+  return {
+    providerIdsByWorkspace,
+    fallbackProviderIds: fallbackProviderIds ?? new Set(),
+    warnings: [],
+  };
 }
 
 function collectPersistedProviderIds(params: {
@@ -233,28 +253,53 @@ export function repairStaleAgentModelRefs(
 ): StaleAgentModelRefRepair {
   const replaceMode = cfg.models?.mode === "replace";
   const pluginProviders = replaceMode
-    ? { providerIds: new Set<string>(), warnings: [] }
+    ? { fallbackProviderIds: new Set<string>(), warnings: [] }
     : collectPluginProviderIds(cfg, options);
-  if (!pluginProviders.providerIds) {
+  if (!pluginProviders.fallbackProviderIds) {
     return { config: cfg, changes: [], warnings: pluginProviders.warnings };
   }
 
-  // Bundled core providers declare provider ownership in their plugin manifests,
-  // so the metadata snapshot is the canonical inventory for both core and plugins.
-  const baseAvailableProviders = pluginProviders.providerIds;
+  const configuredProviderIds = new Set<string>();
   if (!replaceMode) {
-    baseAvailableProviders.add(normalizeProviderId(DEFAULT_PROVIDER));
+    configuredProviderIds.add(normalizeProviderId(DEFAULT_PROVIDER));
   }
   for (const providerId of Object.keys(cfg.models?.providers ?? {})) {
     const normalized = normalizeProviderId(providerId);
     if (normalized) {
-      baseAvailableProviders.add(normalized);
+      configuredProviderIds.add(normalized);
     }
   }
   const config = structuredClone(cfg);
   const changes: string[] = [];
   const warnings = [...pluginProviders.warnings];
   const env = options.env ?? process.env;
+  const pluginProvidersForAgent = (agentId: string): Set<string> => {
+    const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId, env);
+    return new Set(
+      pluginProviders.providerIdsByWorkspace?.get(workspaceDir) ??
+        pluginProviders.fallbackProviderIds,
+    );
+  };
+  const baseAvailableProvidersForAgents = (
+    agentIds: readonly string[],
+    mode: "intersection" | "union",
+  ): Set<string> => {
+    let available: Set<string> | undefined;
+    for (const agentId of agentIds) {
+      const agentProviders = pluginProvidersForAgent(agentId);
+      available =
+        available === undefined
+          ? agentProviders
+          : mode === "intersection"
+            ? new Set([...available].filter((providerId) => agentProviders.has(providerId)))
+            : new Set([...available, ...agentProviders]);
+    }
+    available ??= new Set(pluginProviders.fallbackProviderIds);
+    for (const providerId of configuredProviderIds) {
+      available.add(providerId);
+    }
+    return available;
+  };
   const persistedForAgent = (agentId: string): Set<string> | undefined => {
     const persisted = collectPersistedProviderIds({
       cfg,
@@ -271,7 +316,7 @@ export function repairStaleAgentModelRefs(
     return persisted.providerIds;
   };
   const availabilityForAgent = (agentId: string): Set<string> | undefined => {
-    const available = new Set(baseAvailableProviders);
+    const available = baseAvailableProvidersForAgents([agentId], "intersection");
     if (replaceMode) {
       return available;
     }
@@ -285,10 +330,6 @@ export function repairStaleAgentModelRefs(
     return available;
   };
   const availabilityForDefaults = (): Set<string> | undefined => {
-    const available = new Set(baseAvailableProviders);
-    if (replaceMode) {
-      return available;
-    }
     const inheritingAgentIds: string[] = [];
     for (const agent of listAgentEntries(cfg)) {
       if (typeof agent.id !== "string") {
@@ -312,6 +353,10 @@ export function repairStaleAgentModelRefs(
         inheritingAgentIds.push(defaultAgentId);
       }
     }
+    const available = baseAvailableProvidersForAgents(inheritingAgentIds, "intersection");
+    if (replaceMode) {
+      return available;
+    }
     let commonPersisted: Set<string> | undefined;
     for (const agentId of inheritingAgentIds) {
       const persisted = persistedForAgent(agentId);
@@ -328,10 +373,6 @@ export function repairStaleAgentModelRefs(
     return available;
   };
   const availabilityForDefaultModelMap = (): Set<string> | undefined => {
-    const available = new Set(baseAvailableProviders);
-    if (replaceMode) {
-      return available;
-    }
     const inheritingAgentIds = listAgentEntries(cfg)
       .filter((agent) => isRecord(agent) && typeof agent.id === "string" && !isRecord(agent.models))
       .map((agent) => agent.id as string);
@@ -340,6 +381,10 @@ export function repairStaleAgentModelRefs(
       if (defaultAgentId) {
         inheritingAgentIds.push(defaultAgentId);
       }
+    }
+    const available = baseAvailableProvidersForAgents(inheritingAgentIds, "union");
+    if (replaceMode) {
+      return available;
     }
     for (const agentId of inheritingAgentIds) {
       const persisted = persistedForAgent(agentId);

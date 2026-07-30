@@ -465,6 +465,7 @@ export async function verifySetupInferenceConfig(params: {
 /** Run one tool-free completion through the configured setup inference route. */
 export async function completeSetupInference(params: {
   prompt: string;
+  agentId?: string;
   runtime: RuntimeEnv;
   timeoutMs?: number;
   deps?: ActivateSetupInferenceDeps;
@@ -482,6 +483,7 @@ export async function completeSetupInference(params: {
   return await completeSetupInferenceConfig({
     config: snapshot.runtimeConfig ?? snapshot.config,
     prompt: params.prompt,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
     runtime: params.runtime,
     ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
     ...(params.deps ? { deps: params.deps } : {}),
@@ -492,6 +494,7 @@ export async function completeSetupInference(params: {
 export async function completeSetupInferenceConfig(params: {
   config: OpenClawConfig;
   prompt: string;
+  agentId?: string;
   runtime: RuntimeEnv;
   timeoutMs?: number;
   deps?: ActivateSetupInferenceDeps;
@@ -500,7 +503,9 @@ export async function completeSetupInferenceConfig(params: {
     ...params.deps,
     ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
   };
-  const routeAgentId = normalizeAgentId(resolveSystemAgentTargetAgentId(params.config));
+  const routeAgentId = normalizeAgentId(
+    resolveSystemAgentTargetAgentId(params.config, params.agentId),
+  );
   if (!resolveAgentEffectiveModelPrimary(params.config, routeAgentId)) {
     return { ok: false, status: "unavailable", error: "No agent model is configured." };
   }

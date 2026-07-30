@@ -10,6 +10,7 @@ import {
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
 import { completionRequiresMessageToolDelivery } from "../auto-reply/reply/completion-delivery-policy.js";
+import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isFastTestRuntimeEnv } from "../infra/env.js";
 import { isOutboundDeliveryError } from "../infra/outbound/deliver-types.js";
@@ -625,10 +626,13 @@ export async function runAnnounceDeliveryWithRetry<T>(params: {
 export function loadRequesterSessionEntry(requesterSessionKey: string, explicitAgentId?: string) {
   const cfg = subagentAnnounceDeliveryDeps.getRuntimeConfig();
   const canonicalKey = resolveRequesterStoreKey(cfg, requesterSessionKey);
-  const agentId = resolveAgentIdFromSessionKey(
-    canonicalKey,
-    explicitAgentId ?? resolveDefaultAgentId(cfg),
-  );
+  const scopedAgentId = parseAgentSessionKey(canonicalKey)?.agentId;
+  const agentId =
+    scopedAgentId ??
+    resolveAgentIdFromSessionKey(
+      canonicalKey,
+      explicitAgentId ?? tryResolveLegacyCompatibilityAgentId(cfg),
+    );
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   const entry = subagentAnnounceDeliveryDeps.loadSessionEntry({
     storePath,

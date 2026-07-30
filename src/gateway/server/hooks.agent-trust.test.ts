@@ -53,7 +53,8 @@ vi.mock("../../infra/outbound/channel-resolution.js", () => ({
 vi.mock("../../channels/plugins/helpers.js", () => ({
   resolveChannelDefaultAccountId: resolveChannelDefaultAccountIdMock,
 }));
-vi.mock("../../config/sessions.js", () => ({
+vi.mock("../../config/sessions.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions.js")>()),
   resolveMainSessionKeyFromConfig: resolveMainSessionKeyMock,
   resolveMainSessionKey: vi.fn(
     (cfg?: { session?: { mainKey?: string } }) => `agent:main:${cfg?.session?.mainKey ?? "main"}`,
