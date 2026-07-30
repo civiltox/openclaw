@@ -206,7 +206,10 @@ async function loadRemoteGatewayRoster(cfg: OpenClawConfig): Promise<RemoteGatew
       mode: GATEWAY_CLIENT_MODES.CLI,
       scopes: [READ_SCOPE],
     });
-  } catch {
+  } catch (error) {
+    if (shouldRetryGatewayDispatchWithShellEnvFallback(error)) {
+      throw error;
+    }
     throw new AgentSelectionRequiredError([], {
       surface: "remote gateway agent turn",
       hint: "Pass --agent <id>; the remote gateway roster could not be loaded.",
@@ -255,6 +258,23 @@ async function loadRemoteGatewayRoster(cfg: OpenClawConfig): Promise<RemoteGatew
     mainKey: result.mainKey,
     scope: result.scope,
   };
+}
+
+async function loadRemoteGatewayRosterWithShellEnvFallback(
+  cfg: OpenClawConfig,
+): Promise<{ config: OpenClawConfig; roster: RemoteGatewayRoster }> {
+  try {
+    return { config: cfg, roster: await loadRemoteGatewayRoster(cfg) };
+  } catch (error) {
+    if (!shouldRetryGatewayDispatchWithShellEnvFallback(error)) {
+      throw error;
+    }
+    const fallbackConfig = await readGatewayDispatchConfigWithShellEnvFallback();
+    return {
+      config: fallbackConfig,
+      roster: await loadRemoteGatewayRoster(fallbackConfig),
+    };
+  }
 }
 
 const loadReplyPayloadModule = replyPayloadModuleLoader.load;
@@ -499,7 +519,10 @@ async function normalizeSessionKeyOptsForDispatch(
     normalizedOpts = { ...normalizedOpts, gatewayDispatchConfig: cfg };
     if (usesRemoteGateway(cfg)) {
       try {
-        remoteGatewayRoster = await loadRemoteGatewayRoster(cfg);
+        const loaded = await loadRemoteGatewayRosterWithShellEnvFallback(cfg);
+        cfg = loaded.config;
+        remoteGatewayRoster = loaded.roster;
+        normalizedOpts = { ...normalizedOpts, gatewayDispatchConfig: cfg };
       } catch (error) {
         const hasContractIndependentTarget =
           Boolean(explicitAgentIdRaw) || hasExplicitSessionTarget;

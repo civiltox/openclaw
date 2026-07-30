@@ -1362,6 +1362,67 @@ describe("agentCliCommand", () => {
     );
   });
 
+  it("retries remote roster loading with the shell env credential fallback", async () => {
+    await withTempStore(
+      async ({ store }) => {
+        const fastConfig = {
+          agents: { defaults: { timeoutSeconds: 600 } },
+          session: { store, mainKey: "main" },
+          gateway: { mode: "remote" as const, remote: { url: "wss://gateway.example" } },
+        };
+        const shellEnvConfig = {
+          ...fastConfig,
+          gateway: {
+            ...fastConfig.gateway,
+            auth: { mode: "token" as const },
+          },
+        };
+        loadConfig.mockReset();
+        loadConfig.mockReturnValueOnce(fastConfig);
+        loadConfigWithShellEnvFallback.mockReset();
+        loadConfigWithShellEnvFallback.mockResolvedValueOnce(shellEnvConfig);
+        const authError = new Error("remote roster requires credentials");
+        authError.name = "GatewayCredentialsRequiredError";
+        callGateway
+          .mockRejectedValueOnce(authError)
+          .mockResolvedValueOnce({
+            defaultId: "ops",
+            ownership: "sole",
+            selectionRequired: false,
+            mainKey: "remote-main",
+            scope: "per-sender",
+            agents: [{ id: "ops", name: "Operations" }],
+          })
+          .mockResolvedValueOnce({
+            runId: "idem-1",
+            status: "ok",
+            result: { payloads: [{ text: "remote" }], meta: { stub: true } },
+          });
+
+        await agentCliCommand({ message: "hi" }, runtime);
+
+        expect(loadConfigWithShellEnvFallback).toHaveBeenCalledTimes(1);
+        expect(
+          callGateway.mock.calls.map(([request]) => requireRecord(request, "request").method),
+        ).toEqual(["agents.list", "agents.list", "agent"]);
+        const requestConfigs = callGateway.mock.calls.map(
+          ([request]) => requireRecord(request, "gateway request").config,
+        );
+        expect(requestConfigs[0]).toBe(fastConfig);
+        expect(requestConfigs[1]).toBe(shellEnvConfig);
+        expect(requestConfigs[2]).toMatchObject({
+          gateway: shellEnvConfig.gateway,
+          agents: { entries: { ops: { name: "Operations" } } },
+          session: { mainKey: "remote-main", scope: "per-sender" },
+        });
+      },
+      {
+        agents: { list: [{ id: "local-main" }] },
+        gateway: { mode: "remote", remote: { url: "wss://gateway.example" } },
+      },
+    );
+  });
+
   it("does not treat an explicitly owned one-agent global roster as implicit", async () => {
     callGateway.mockResolvedValueOnce({
       defaultId: "ops",
