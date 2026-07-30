@@ -109,6 +109,41 @@ describe("onboarding main-agent creation", () => {
     expect(result.agentId).toBe("ops");
   });
 
+  it("provisions a first-agent roster entry staged for auth discovery", async () => {
+    mocks.createAgent.mockResolvedValueOnce({
+      status: "created",
+      agentId: "ops",
+      name: "ops",
+      workspace: "/tmp/ops-work",
+      agentDir: "/tmp/ops-agent",
+      bootstrapPending: true,
+    });
+    mocks.readConfigFileSnapshot
+      .mockReset()
+      .mockResolvedValueOnce({ exists: false, valid: true, sourceConfig: {}, config: {} })
+      .mockResolvedValueOnce({
+        exists: true,
+        valid: true,
+        sourceConfig: { agents: { entries: { ops: {} } } },
+        config: { agents: { entries: { ops: {} } } },
+      });
+
+    const result = await ensureOnboardingAgent({
+      config: { agents: { entries: { ops: { workspace: "/tmp/ops-work" } } } },
+      baseConfig: {},
+      workspace: "/tmp/ops-work",
+      agentId: "ops",
+      candidateRosterIsStagedFirstAgent: true,
+    });
+
+    expect(mocks.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entry: expect.objectContaining({ id: "ops", workspace: "/tmp/ops-work" }),
+      }),
+    );
+    expect(result.agentId).toBe("ops");
+  });
+
   it("preserves an explicit imported candidate roster", async () => {
     const config = { agents: { list: [{ id: "main", default: true }] } };
 

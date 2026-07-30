@@ -43,6 +43,7 @@ export type EnsureOnboardingAgentParams = {
   config: OpenClawConfig;
   workspace: string;
   preserveCandidateRoster?: boolean;
+  candidateRosterIsStagedFirstAgent?: boolean;
   baseConfig?: OpenClawConfig;
   agentId?: string;
   runtime?: RuntimeEnv;
@@ -64,6 +65,7 @@ export async function ensureOnboardingAgent(params: EnsureOnboardingAgentParams)
   const candidateRoster = listAgentEntries(params.config);
   if (
     candidateRoster.length > 0 &&
+    !params.candidateRosterIsStagedFirstAgent &&
     (params.preserveCandidateRoster || !isInjectedMainRoster(params.config))
   ) {
     const config =

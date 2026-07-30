@@ -20,10 +20,11 @@ beforeEach(() => {
   gatewayCall.mockReset();
 });
 
-function createTool(options: { a2aEnabled?: boolean } = {}) {
+function createTool(options: { a2aEnabled?: boolean; agentId?: string } = {}) {
+  const agentId = options.agentId ?? "main";
   return createSessionsSendTool({
-    agentId: "main",
-    agentSessionKey: "agent:main:main",
+    agentId,
+    agentSessionKey: `agent:${agentId}:main`,
     config: {
       agents: { ownership: "explicit", entries: { main: {}, other: {} } },
       tools: {
@@ -87,6 +88,49 @@ describe("sessions_send resolved-owner authorization", () => {
         params: expect.objectContaining({ agentId: "main", sessionKey: "incident-42" }),
       }),
     );
+  });
+
+  it("fails closed when an older gateway omits the owner of a bare key", async () => {
+    gatewayCall.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "sessions.resolve") {
+        return { key: "incident-42" };
+      }
+      return {};
+    });
+
+    const result = await createTool({ agentId: "other" }).execute("ownerless-bare", {
+      sessionKey: "b0d79b63-0f73-4bc9-a6b5-6d8e20f42c3c",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("ownership could not be verified"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("does not trust a caller-supplied agent for an ownerless bare key", async () => {
+    gatewayCall.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "sessions.resolve") {
+        return { key: "incident-42" };
+      }
+      return {};
+    });
+
+    const result = await createTool({ agentId: "other" }).execute("ownerless-bare-agent", {
+      sessionKey: "b0d79b63-0f73-4bc9-a6b5-6d8e20f42c3c",
+      agentId: "other",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("ownership could not be verified"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
   });
 
   it("keeps an owned global sentinel subject to cross-agent policy", async () => {

@@ -9,6 +9,7 @@ import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-co
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import { readAcpSessionMeta } from "../../acp/runtime/session-meta.js";
+import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { parseSessionThreadInfo } from "../../config/sessions/thread-info.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { AgentRouteBinding } from "../../config/types.agents.js";
@@ -616,12 +617,27 @@ export function createSessionsSendTool(opts?: {
       // Normalize sessionKey/sessionId input into a canonical session key.
       const resolvedKey = visibleSession.key;
       const displayKey = visibleSession.displayKey;
+      const resolvedKeyAgentId = parseAgentSessionKey(resolvedKey)?.agentId;
+      const compatibilityTargetAgentId =
+        !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)
+          ? tryResolveLegacyCompatibilityAgentId(cfg)
+          : undefined;
       const targetAgentId =
         visibleSession.agentId ??
         resolvedTargetAgentId ??
-        parseAgentSessionKey(resolvedKey)?.agentId ??
-        (labelAgentIdParam ? normalizeAgentId(labelAgentIdParam) : undefined) ??
-        (isUnscopedSessionKeySentinel(resolvedKey) ? requesterAgentId : undefined);
+        resolvedKeyAgentId ??
+        (labelParam && labelAgentIdParam ? normalizeAgentId(labelAgentIdParam) : undefined) ??
+        (isUnscopedSessionKeySentinel(resolvedKey) ? requesterAgentId : undefined) ??
+        compatibilityTargetAgentId;
+      if (!targetAgentId && !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "forbidden",
+          error:
+            "Session ownership could not be verified. Upgrade the gateway or use an agent-prefixed session key.",
+          sessionKey: unresolvedDisplayKey,
+        });
+      }
       const rawRequesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
       const parsedRequesterSessionKey = parseAgentSessionKey(rawRequesterSessionKey);
       const requesterRouteBindings = cfg.bindings?.filter(

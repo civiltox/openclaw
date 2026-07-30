@@ -8,6 +8,7 @@ export function isCronInvalidRequestError(err: unknown): boolean {
     message.includes("cron job id must not be blank") ||
     message.includes("cron declarationKey") ||
     message.includes("cron displayName") ||
+    message.includes("does not match sessionKey owner") ||
     message.includes("cron triggers are disabled") ||
     message.includes("cron triggers require") ||
     message.includes("cron trigger every interval") ||

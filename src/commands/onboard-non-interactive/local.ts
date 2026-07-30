@@ -4,6 +4,7 @@
  * This entrypoint applies config changes, optionally installs the gateway
  * daemon, verifies health, and emits machine-readable setup output.
  */
+import { listAgentEntries } from "../../agents/agent-scope-config.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { resolveGatewayPort } from "../../config/config.js";
 import { logConfigUpdated } from "../../config/logging.js";
@@ -284,6 +285,12 @@ export async function runNonInteractiveLocalSetup(params: {
     workspace: workspaceDir,
     baseConfig,
     agentId: opts.agent,
+    // Auth discovery stages this entry so it can resolve the requested owner;
+    // it is not provisioned until the canonical createAgent path runs below.
+    candidateRosterIsStagedFirstAgent:
+      selectedWorkspaceRequested &&
+      params.agentRosterIncludeOwned !== true &&
+      listAgentEntries(baseConfig).length === 0,
     runtime,
     selectionDeps: { interactive: false },
   });
