@@ -429,15 +429,21 @@ export function createLifecycleEventBroadcastHandler(params: {
     if (!hasSessionsChangedReceiver(connIds)) {
       return;
     }
-    const sessionRow = loadGatewaySessionRow(event.sessionKey);
     const compatibilityDefaultAgentId = tryResolveCompatibilityDefaultAgentId();
+    const eventAgentId =
+      normalizeOptionalString(event.agentId) ?? parseAgentSessionKey(event.sessionKey)?.agentId;
+    const rowAgentId = eventAgentId ?? compatibilityDefaultAgentId;
+    const sessionRow = rowAgentId
+      ? loadGatewaySessionRow(event.sessionKey, { agentId: rowAgentId })
+      : undefined;
     const activeRunState =
-      sessionRow && (sessionRow.key !== "global" || compatibilityDefaultAgentId)
+      sessionRow && (sessionRow.key !== "global" || eventAgentId || compatibilityDefaultAgentId)
         ? resolveVisibleActiveSessionRunState({
             context: params,
             requestedKey: event.sessionKey,
             canonicalKey: sessionRow.key,
             sessionId: sessionRow.sessionId,
+            ...(eventAgentId ? { agentId: eventAgentId } : {}),
             defaultAgentId: compatibilityDefaultAgentId,
           })
         : null;
@@ -445,6 +451,7 @@ export function createLifecycleEventBroadcastHandler(params: {
       "sessions.changed",
       {
         sessionKey: event.sessionKey,
+        ...(eventAgentId ? { agentId: eventAgentId } : {}),
         reason: event.reason,
         parentSessionKey: event.parentSessionKey,
         label: event.label,

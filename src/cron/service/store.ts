@@ -38,6 +38,33 @@ function durableNextRunsFromJobs(jobs: readonly CronJob[]) {
   return new Map(jobs.map((job) => [job.id, job.state.nextRunAtMs] as const));
 }
 
+function mergeCommittedCronStoreIntoLive(
+  liveStore: CronStoreFile,
+  committedStore: CronStoreFile,
+): CronStoreFile {
+  const liveJobsById = new Map(liveStore.jobs.map((job) => [job.id, job]));
+  const mergedJobs = committedStore.jobs.map((committedJob) => {
+    const liveJob = liveJobsById.get(committedJob.id);
+    if (!liveJob) {
+      return committedJob;
+    }
+    const liveRecord = liveJob as unknown as Record<string, unknown>;
+    const committedRecord = committedJob as unknown as Record<string, unknown>;
+    for (const key of Object.keys(liveRecord)) {
+      if (!Object.hasOwn(committedRecord, key)) {
+        delete liveRecord[key];
+      }
+    }
+    Object.assign(liveRecord, committedRecord);
+    return liveJob;
+  });
+  // Timer and mutation callers retain job references across persist(). Preserve
+  // same-id objects and the store array while publishing the merged durable state.
+  liveStore.version = committedStore.version;
+  liveStore.jobs.splice(0, liveStore.jobs.length, ...mergedJobs);
+  return liveStore;
+}
+
 function publishDurableNextRunChanges(params: {
   state: CronServiceState;
   storeJobs: readonly CronJob[];
@@ -336,8 +363,8 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
       state.storeEpoch = committed.storeEpoch;
       state.runtimeRevision = committed.runtimeRevision;
       if (committed.runtimeMerged) {
-        state.store = committed.store;
-        persistedStore = committed.store;
+        persistedStore = mergeCommittedCronStoreIntoLive(store, committed.store);
+        state.store = persistedStore;
       }
       state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(committed.store.jobs);
     }

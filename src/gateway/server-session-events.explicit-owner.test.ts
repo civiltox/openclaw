@@ -33,6 +33,7 @@ vi.mock("../config/io.js", () => ({
 }));
 
 vi.mock("../config/legacy.default-agent-owner.js", () => ({
+  resolveSessionStoreCompatibilityAgentId: () => legacyDefaultAgentIdMock() ?? "main",
   tryGetLegacyDefaultAgentId: legacyDefaultAgentIdMock,
   tryResolveLegacyCompatibilityAgentId: legacyDefaultAgentIdMock,
 }));
@@ -83,8 +84,42 @@ describe("server session events without a compatibility owner", () => {
     handler({ sessionKey: "global", reason: "updated" } as never);
 
     expect(resolveVisibleActiveSessionRunStateMock).not.toHaveBeenCalled();
+    expect(loadGatewaySessionRowMock).not.toHaveBeenCalled();
     expect(broadcastToConnIds.mock.calls[0]?.[1]).not.toEqual(
       expect.objectContaining({ hasActiveRun: true }),
+    );
+  });
+
+  it("projects a bare lifecycle event through its explicit owner", () => {
+    loadGatewaySessionRowMock.mockReturnValue({
+      ...globalRow,
+      key: "incident-42",
+      kind: "other",
+    });
+    resolveVisibleActiveSessionRunStateMock.mockReturnValue({
+      active: true,
+      runIds: ["run-work-incident"],
+    });
+    const handler = createLifecycleEventBroadcastHandler({
+      broadcastToConnIds,
+      sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
+      chatAbortControllers: new Map(),
+    });
+
+    handler({ sessionKey: "incident-42", agentId: "work", reason: "updated" });
+
+    expect(loadGatewaySessionRowMock).toHaveBeenCalledWith("incident-42", {
+      agentId: "work",
+    });
+    expect(resolveVisibleActiveSessionRunStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "work", canonicalKey: "incident-42" }),
+    );
+    expect(broadcastToConnIds.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        agentId: "work",
+        hasActiveRun: true,
+        activeRunIds: ["run-work-incident"],
+      }),
     );
   });
 

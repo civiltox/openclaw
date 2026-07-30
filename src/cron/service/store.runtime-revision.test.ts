@@ -50,6 +50,9 @@ describe("cron service runtime revisions", () => {
     });
 
     const edited = state.store?.jobs.find((entry) => entry.id === "edited");
+    const originalStore = state.store;
+    const originalJobs = state.store?.jobs;
+    const originalSibling = state.store?.jobs.find((entry) => entry.id === "sibling");
     if (!edited) {
       throw new Error("missing edited cron fixture");
     }
@@ -58,6 +61,10 @@ describe("cron service runtime revisions", () => {
     await persist(state);
 
     const inMemorySibling = state.store?.jobs.find((entry) => entry.id === "sibling");
+    expect(state.store).toBe(originalStore);
+    expect(state.store?.jobs).toBe(originalJobs);
+    expect(state.store?.jobs.find((entry) => entry.id === "edited")).toBe(edited);
+    expect(inMemorySibling).toBe(originalSibling);
     expect(state.store?.jobs.find((entry) => entry.id === "edited")?.updatedAtMs).toBe(NOW);
     expect(inMemorySibling?.state).toMatchObject({
       nextRunAtMs: NOW + 120_000,
