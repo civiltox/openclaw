@@ -456,6 +456,20 @@ describe("provider error utils", () => {
     });
   });
 
+  it("preserves provider error JSON bytes when opaque redaction is a no-op", async () => {
+    const rawBody =
+      '{"message":"first","message":"Gateway rejected request","id":9007199254740993}';
+    const response = new Response(rawBody, { status: 502 });
+
+    const error = (await createProviderHttpError(
+      response,
+      "Provider API error",
+    )) as ProviderHttpError;
+
+    expect(error.message).toBe("Provider API error (502): Gateway rejected request");
+    expect(error.errorBody).toBe(rawBody);
+  });
+
   it("keeps legacy HTTP status formatting while sharing provider parsing", async () => {
     const response = new Response(
       JSON.stringify({

@@ -46,6 +46,21 @@ function replaceVariant(text: string, variant: RedactionVariant, replacement: st
     : text.replaceAll(variant.value, replacement);
 }
 
+function redactOpaqueValuesInTextWithVariants(
+  text: string,
+  variants: readonly RedactionVariant[],
+  replacement: string,
+): string {
+  if (variants.some((variant) => variant.suppressWholeField && includesVariant(text, variant))) {
+    return replacement;
+  }
+  let redacted = text;
+  for (const variant of variants) {
+    redacted = replaceVariant(redacted, variant, replacement);
+  }
+  return redacted;
+}
+
 /**
  * Redacts caller-designated opaque values from one unstructured field.
  *
@@ -58,20 +73,58 @@ export function redactOpaqueValuesInText(
   replacement: string,
 ): string {
   const variants = buildVariants(values ?? []);
-  if (variants.some((variant) => variant.suppressWholeField && includesVariant(text, variant))) {
-    return replacement;
-  }
-  let redacted = text;
-  for (const variant of variants) {
-    redacted = replaceVariant(redacted, variant, replacement);
-  }
-  return redacted;
+  return redactOpaqueValuesInTextWithVariants(text, variants, replacement);
 }
 
 type OpaqueValueJsonRedactionOptions = {
   /** Preserve property names for callers that still need to inspect a known payload shape. */
   redactKeys?: boolean;
 };
+
+type JsonRedactionResult = {
+  value: unknown;
+  changed: boolean;
+};
+
+function redactOpaqueValuesInJsonWithResult(
+  value: unknown,
+  variants: readonly RedactionVariant[],
+  replacement: string,
+  options: OpaqueValueJsonRedactionOptions,
+): JsonRedactionResult {
+  if (typeof value === "string") {
+    const redacted = redactOpaqueValuesInTextWithVariants(value, variants, replacement);
+    return { value: redacted, changed: redacted !== value };
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    const serialized = JSON.stringify(value);
+    const redacted = redactOpaqueValuesInTextWithVariants(serialized, variants, replacement);
+    return { value: redacted === serialized ? value : redacted, changed: redacted !== serialized };
+  }
+  if (Array.isArray(value)) {
+    const results = value.map((item) =>
+      redactOpaqueValuesInJsonWithResult(item, variants, replacement, options),
+    );
+    return {
+      value: results.map((result) => result.value),
+      changed: results.some((result) => result.changed),
+    };
+  }
+  if (typeof value === "object" && value !== null) {
+    let changed = false;
+    const entries = Object.entries(value).map(([key, item]) => {
+      const redactedKey =
+        options.redactKeys === false
+          ? key
+          : redactOpaqueValuesInTextWithVariants(key, variants, replacement);
+      const redactedItem = redactOpaqueValuesInJsonWithResult(item, variants, replacement, options);
+      changed ||= redactedKey !== key || redactedItem.changed;
+      return [redactedKey, redactedItem.value];
+    });
+    return { value: Object.fromEntries(entries), changed };
+  }
+  return { value, changed: false };
+}
 
 /** Redacts JSON string values and, by default, property names while preserving valid JSON. */
 export function redactOpaqueValuesInJson(
@@ -80,26 +133,11 @@ export function redactOpaqueValuesInJson(
   replacement: string,
   options: OpaqueValueJsonRedactionOptions = {},
 ): unknown {
-  if (typeof value === "string") {
-    return redactOpaqueValuesInText(value, values, replacement);
+  const variants = buildVariants(values ?? []);
+  if (variants.length === 0) {
+    return value;
   }
-  if (value === null || typeof value === "number" || typeof value === "boolean") {
-    const serialized = JSON.stringify(value);
-    const redacted = redactOpaqueValuesInText(serialized, values, replacement);
-    return redacted === serialized ? value : redacted;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactOpaqueValuesInJson(item, values, replacement, options));
-  }
-  if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        options.redactKeys === false ? key : redactOpaqueValuesInText(key, values, replacement),
-        redactOpaqueValuesInJson(item, values, replacement, options),
-      ]),
-    );
-  }
-  return value;
+  return redactOpaqueValuesInJsonWithResult(value, variants, replacement, options).value;
 }
 
 /**
@@ -112,11 +150,23 @@ export function redactOpaqueValuesInSerializedJson(
   replacement: string,
   options?: OpaqueValueJsonRedactionOptions,
 ): string {
+  const variants = buildVariants(values ?? []);
+  if (
+    variants.length === 0 ||
+    (!serialized.includes("\\") &&
+      !variants.some((variant) => includesVariant(serialized, variant)))
+  ) {
+    return serialized;
+  }
   try {
-    return JSON.stringify(
-      redactOpaqueValuesInJson(JSON.parse(serialized), values, replacement, options),
+    const result = redactOpaqueValuesInJsonWithResult(
+      JSON.parse(serialized),
+      variants,
+      replacement,
+      options ?? {},
     );
+    return result.changed ? JSON.stringify(result.value) : serialized;
   } catch {
-    return redactOpaqueValuesInText(serialized, values, replacement);
+    return redactOpaqueValuesInTextWithVariants(serialized, variants, replacement);
   }
 }

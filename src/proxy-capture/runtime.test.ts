@@ -414,6 +414,37 @@ describe("debug proxy runtime", () => {
     });
   });
 
+  it("preserves unmatched serialized HTTP and WebSocket payload bytes", async () => {
+    const payload = '{\n  "id": 9007199254740993,\n  "id": 9007199254740993\n}';
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.com/events",
+        method: "POST",
+        requestBody: payload,
+        response: new Response(payload, { status: 200 }),
+        sensitiveValues: ["not-present"],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+    captureWsEvent(
+      {
+        url: "wss://chat.example.test/events",
+        direction: "outbound",
+        kind: "ws-frame",
+        flowId: "unchanged-json",
+        payload,
+      },
+      settings,
+      deps,
+    );
+
+    expect(events.find((event) => event.kind === "request")?.dataText).toBe(payload);
+    expect(events.find((event) => event.kind === "response")?.dataText).toBe(payload);
+    expect(events.find((event) => event.flowId === "unchanged-json")?.dataText).toBe(payload);
+  });
+
   it("redacts registered values from every persisted WebSocket field", () => {
     const secret = 'mattermost-"capture\\secret\nline';
     registerSecretValueForRedaction(secret);

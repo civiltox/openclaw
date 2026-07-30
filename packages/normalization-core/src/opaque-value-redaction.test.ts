@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   redactOpaqueValuesInSerializedJson,
   redactOpaqueValuesInText,
@@ -42,6 +42,16 @@ describe("opaque value redaction", () => {
     expect(redacted).not.toContain("tenant-route");
   });
 
+  it("redacts opaque values represented with JSON Unicode escapes", () => {
+    const redacted = redactOpaqueValuesInSerializedJson(
+      String.raw`{"route":"tenant\u002droute"}`,
+      ["tenant-route"],
+      "***",
+    );
+
+    expect(JSON.parse(redacted)).toStrictEqual({ route: "***" });
+  });
+
   it("can preserve property names while redacting values for schema inspection", () => {
     const redacted = redactOpaqueValuesInSerializedJson(
       '{"message":"message"}',
@@ -66,5 +76,20 @@ describe("opaque value redaction", () => {
       fallback: "***",
       count: 7,
     });
+  });
+
+  it("preserves serialized JSON bytes when no opaque value is replaced", () => {
+    const serialized = '{\n  "id": 9007199254740993,\n  "id": 9007199254740993\n}';
+    const parseSpy = vi.spyOn(JSON, "parse");
+
+    try {
+      expect(redactOpaqueValuesInSerializedJson(serialized, undefined, "***")).toBe(serialized);
+      expect(redactOpaqueValuesInSerializedJson(serialized, ["not-present"], "***")).toBe(
+        serialized,
+      );
+      expect(parseSpy).not.toHaveBeenCalled();
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 });

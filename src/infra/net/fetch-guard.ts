@@ -17,9 +17,11 @@ import {
 import {
   captureGuardedFetchError,
   captureGuardedFetchExchange,
+  DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER,
+  shouldMarkStandaloneProxyCapture,
   type GuardedFetchCaptureOptions,
 } from "./fetch-guard-capture.js";
-import { shouldUseEnvHttpProxyForUrl } from "./proxy-env.js";
+import { resolveEnvHttpProxyUrl, shouldUseEnvHttpProxyForUrl } from "./proxy-env.js";
 import { retainSafeHeadersForCrossOriginRedirect as retainSafeRedirectHeaders } from "./redirect-headers.js";
 import {
   fetchWithRuntimeDispatcher,
@@ -604,8 +606,22 @@ async function fetchWithSsrFGuardInternal(
         dispatcher = createPinnedDispatcher(pinned, dispatcherPolicy, policyForUrl, timeoutMs);
       }
 
+      const shouldMarkStandaloneCapture = shouldMarkStandaloneProxyCapture({
+        capture: params.capture,
+        envProxyUrl: canUseTrustedEnvProxy
+          ? resolveEnvHttpProxyUrl(parsedUrl.protocol === "http:" ? "http" : "https")
+          : undefined,
+        protocol: parsedUrl.protocol,
+      });
+      let requestHeaders = currentInit?.headers;
+      if (shouldMarkStandaloneCapture) {
+        const markedHeaders = new Headers(currentInit?.headers);
+        markedHeaders.set(DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER, "1");
+        requestHeaders = markedHeaders;
+      }
       const init: DispatcherAwareRequestInit = {
         ...(currentInit ? { ...currentInit } : {}),
+        ...(requestHeaders ? { headers: requestHeaders } : {}),
         redirect: "manual",
         ...(dispatcher ? { dispatcher } : {}),
         ...(signal ? { signal } : {}),

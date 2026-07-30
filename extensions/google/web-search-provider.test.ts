@@ -261,6 +261,7 @@ describe("google web search provider", () => {
   it.each<[string, string]>([
     ["content-type", "text/plain"],
     ["sec-fetch-mode", "navigate"],
+    ["x-openclaw-debug-proxy-redact-all", "1"],
     ["x-goog-api-key", "AIza-header-override"],
     ["x-goog-api-client", "operator-client"],
   ])("rejects provider-owned header %s on custom endpoints", async (name, value) => {

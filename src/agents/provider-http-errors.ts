@@ -6,6 +6,7 @@
  */
 import {
   redactOpaqueValuesInJson,
+  redactOpaqueValuesInSerializedJson,
   redactOpaqueValuesInText,
 } from "@openclaw/normalization-core/opaque-value-redaction";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -251,11 +252,9 @@ async function extractProviderErrorInfo(
       options?.redactValues,
       { redactKeys: false },
     );
-    const bodyPayload = redactProviderErrorPayloadStringValues(
-      parsedPayload,
-      options?.redactValues,
+    const body = redactProviderErrorBody(
+      redactOpaqueValuesInSerializedJson(rawBody, options?.redactValues, "***"),
     );
-    const body = redactProviderErrorBody(JSON.stringify(bodyPayload));
     const metadata = extractProviderErrorPayloadMetadata(metadataPayload);
     const detail = redactProviderErrorMetadata(metadata.detail, options?.redactValues);
     const code = redactProviderErrorMetadata(metadata.code, options?.redactValues);

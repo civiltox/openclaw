@@ -6,9 +6,10 @@ import { request as httpsRequest } from "node:https";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import { URL } from "node:url";
+import { DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER } from "../infra/net/fetch-guard-capture.js";
 import { ensureDebugProxyCa } from "./ca.js";
 import type { DebugProxySettings } from "./env.js";
-import { redactedCaptureHeaders } from "./header-redaction.js";
+import { REDACTED_CAPTURE_HEADER_VALUE, redactedCaptureHeaders } from "./header-redaction.js";
 import { getDebugProxyCaptureStore } from "./store.sqlite.js";
 import type { CaptureEventRecord } from "./types.js";
 
@@ -135,14 +136,20 @@ function appendBodyPreviewCapture(capture: BodyPreviewCapture, chunk: Buffer | s
   }
 }
 
-function finishBodyPreviewCapture(capture: BodyPreviewCapture): {
+function finishBodyPreviewCapture(
+  capture: BodyPreviewCapture,
+  redactAll: boolean,
+): {
   dataText: string;
   metaJson?: string;
 } {
   return {
     // write(), unlike end(), omits an incomplete trailing code point introduced
     // by the byte cap instead of injecting a replacement character into the preview.
-    dataText: new StringDecoder("utf8").write(Buffer.concat(capture.chunks, capture.previewBytes)),
+    dataText:
+      redactAll && capture.totalBytes > 0
+        ? REDACTED_CAPTURE_HEADER_VALUE
+        : new StringDecoder("utf8").write(Buffer.concat(capture.chunks, capture.previewBytes)),
     metaJson: capture.truncated
       ? JSON.stringify({
           bodyBytes: capture.totalBytes,
@@ -151,6 +158,15 @@ function finishBodyPreviewCapture(capture: BodyPreviewCapture): {
         })
       : undefined,
   };
+}
+
+function shouldRedactAllCapture(req: IncomingMessage): boolean {
+  const marker = req.headers[DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER];
+  return Array.isArray(marker) ? marker.includes("1") : marker === "1";
+}
+
+function redactProxyErrorText(errorText: string, redactAll: boolean): string {
+  return redactAll ? REDACTED_CAPTURE_HEADER_VALUE : errorText;
 }
 
 function finishProxyResponseAfterUpstreamError(res: ServerResponse): void {
@@ -184,6 +200,9 @@ export async function startDebugProxyServer(params: {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       const flowId = randomUUID();
+      const redactAllCapture = shouldRedactAllCapture(req);
+      const upstreamHeaders = { ...req.headers };
+      delete upstreamHeaders[DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER];
       let target: URL;
       try {
         target = normalizeTargetUrl(req);
@@ -196,8 +215,11 @@ export async function startDebugProxyServer(params: {
           flowId,
           method: req.method,
           host: req.headers.host,
-          path: req.url ?? "",
-          errorText: error instanceof Error ? error.message : String(error),
+          path: redactAllCapture ? REDACTED_CAPTURE_HEADER_VALUE : (req.url ?? ""),
+          errorText: redactProxyErrorText(
+            error instanceof Error ? error.message : String(error),
+            redactAllCapture,
+          ),
         });
         const responseBody = `${message}\n`;
         res.writeHead(400, {
@@ -209,7 +231,13 @@ export async function startDebugProxyServer(params: {
         return;
       }
       const targetProtocol = target.protocol === "https:" ? "https" : "http";
-      const targetPath = `${target.pathname}${target.search}`;
+      const targetPath = redactAllCapture
+        ? REDACTED_CAPTURE_HEADER_VALUE
+        : `${target.pathname}${target.search}`;
+      const redactHeaders = (
+        headers: Record<string, string | string[] | undefined>,
+      ): Record<string, string> | undefined =>
+        redactedCaptureHeaders(headers, redactAllCapture ? Object.keys(headers) : undefined);
       const recordTargetEvent = (
         event: Omit<ProxyCaptureEventInput, "protocol" | "flowId" | "method" | "host" | "path">,
       ) =>
@@ -228,7 +256,7 @@ export async function startDebugProxyServer(params: {
         recordTargetEvent({
           direction: "local",
           kind: "error",
-          errorText: message,
+          errorText: redactProxyErrorText(message, redactAllCapture),
         });
         const responseBody = `${message}\n`;
         res.writeHead(403, {
@@ -244,7 +272,7 @@ export async function startDebugProxyServer(params: {
         target,
         {
           method: req.method,
-          headers: req.headers,
+          headers: upstreamHeaders,
         },
         (upstreamRes) => {
           const responseCapture = createBodyPreviewCapture();
@@ -268,7 +296,10 @@ export async function startDebugProxyServer(params: {
             recordTargetEvent({
               direction: "local",
               kind: "error",
-              errorText: error?.message ?? "Downstream response closed before completion",
+              errorText: redactProxyErrorText(
+                error?.message ?? "Downstream response closed before completion",
+                redactAllCapture,
+              ),
             });
             upstream.destroy();
             upstreamRes.destroy();
@@ -283,8 +314,8 @@ export async function startDebugProxyServer(params: {
               direction: "inbound",
               kind: "response",
               status: upstreamRes.statusCode ?? undefined,
-              headersJson: JSON.stringify(redactedCaptureHeaders(upstreamRes.headers)),
-              ...finishBodyPreviewCapture(responseCapture),
+              headersJson: JSON.stringify(redactHeaders(upstreamRes.headers)),
+              ...finishBodyPreviewCapture(responseCapture, redactAllCapture),
             });
           });
           res.on("error", handleDownstreamFailure);
@@ -324,7 +355,7 @@ export async function startDebugProxyServer(params: {
             recordTargetEvent({
               direction: "inbound",
               kind: "error",
-              errorText: error.message,
+              errorText: redactProxyErrorText(error.message, redactAllCapture),
             });
             finishProxyResponseAfterUpstreamError(res);
           });
@@ -338,15 +369,15 @@ export async function startDebugProxyServer(params: {
         recordTargetEvent({
           direction: "outbound",
           kind: "request",
-          headersJson: JSON.stringify(redactedCaptureHeaders(req.headers)),
-          ...finishBodyPreviewCapture(requestCapture),
+          headersJson: JSON.stringify(redactHeaders(upstreamHeaders)),
+          ...finishBodyPreviewCapture(requestCapture, redactAllCapture),
         });
       });
       req.on("error", (error) => {
         recordTargetEvent({
           direction: "local",
           kind: "error",
-          errorText: error.message,
+          errorText: redactProxyErrorText(error.message, redactAllCapture),
         });
         upstream.destroy(error);
       });
@@ -354,7 +385,7 @@ export async function startDebugProxyServer(params: {
         recordTargetEvent({
           direction: "local",
           kind: "error",
-          errorText: error.message,
+          errorText: redactProxyErrorText(error.message, redactAllCapture),
         });
         finishProxyResponseAfterUpstreamError(res);
       });

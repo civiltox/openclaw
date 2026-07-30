@@ -2,6 +2,14 @@
 import { isTruthyEnvValue } from "../env.js";
 
 const OPENCLAW_DEBUG_PROXY_ENABLED = "OPENCLAW_DEBUG_PROXY_ENABLED";
+const OPENCLAW_DEBUG_PROXY_REQUIRE = "OPENCLAW_DEBUG_PROXY_REQUIRE";
+const OPENCLAW_DEBUG_PROXY_URL = "OPENCLAW_DEBUG_PROXY_URL";
+
+/**
+ * Private hop marker for the standalone debug proxy. It carries no secret
+ * metadata; the proxy removes it before forwarding the request.
+ */
+export const DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER = "x-openclaw-debug-proxy-redact-all";
 
 export type GuardedFetchCaptureOptions = {
   flowId?: string;
@@ -30,6 +38,36 @@ function resolveCaptureOptions(
   capture: GuardedFetchCapture | undefined,
 ): GuardedFetchCaptureOptions | undefined {
   return capture === false ? undefined : capture;
+}
+
+export function shouldMarkStandaloneProxyCapture(params: {
+  capture: GuardedFetchCapture | undefined;
+  envProxyUrl: string | undefined;
+  protocol: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  const env = params.env ?? process.env;
+  const capture = resolveCaptureOptions(params.capture);
+  const debugProxyUrl = env[OPENCLAW_DEBUG_PROXY_URL]?.trim();
+  const usesDebugProxy = (() => {
+    try {
+      return Boolean(
+        params.envProxyUrl &&
+        debugProxyUrl &&
+        new URL(params.envProxyUrl).href === new URL(debugProxyUrl).href,
+      );
+    } catch {
+      return false;
+    }
+  })();
+  return Boolean(
+    params.protocol === "http:" &&
+    usesDebugProxy &&
+    capture &&
+    (capture.sensitiveRequestHeaderNames?.length || capture.sensitiveValues?.length) &&
+    isTruthyEnvValue(env[OPENCLAW_DEBUG_PROXY_ENABLED]) &&
+    isTruthyEnvValue(env[OPENCLAW_DEBUG_PROXY_REQUIRE]),
+  );
 }
 
 function buildCaptureMeta(params: GuardedFetchCaptureBase): Record<string, unknown> {

@@ -1,6 +1,7 @@
 // Guarded fetch SSRF tests cover redirect hardening, pinned dispatcher setup,
 // trusted proxy modes, and safe header retention.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER } from "./fetch-guard-capture.js";
 import {
   fetchConfiguredLocalOriginWithSsrFGuard,
   fetchWithSsrFGuard,
@@ -456,6 +457,43 @@ describe("fetchWithSsrFGuard hardening", () => {
     } finally {
       globalThis.fetch = originalGlobalFetch;
     }
+  });
+
+  it("marks sensitive plain-HTTP requests for the required standalone debug proxy", async () => {
+    clearProxyEnv();
+    vi.stubEnv("http_proxy", "http://127.0.0.1:7890");
+    vi.stubEnv("NO_PROXY", "");
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_REQUIRE", "1");
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_URL", "http://127.0.0.1:7890");
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get(DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER)).toBe("1");
+      return okResponse();
+    });
+
+    const result = await fetchWithSsrFGuard({
+      url: "http://api.example.com/search",
+      fetchImpl,
+      mode: GUARDED_FETCH_MODE.TRUSTED_ENV_PROXY,
+      init: {
+        method: "POST",
+        headers: { "X-Routing-Target": "staging-private-route" },
+      },
+      capture: {
+        sensitiveRequestHeaderNames: ["X-Routing-Target"],
+        sensitiveValues: ["staging-private-route"],
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(proxyCaptureMocks.captureHttpExchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestHeaders: expect.not.objectContaining({
+          [DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER]: expect.anything(),
+        }),
+      }),
+    );
+    await result.release();
   });
 
   it("hands tuple-form request headers to request-specific capture unchanged", async () => {

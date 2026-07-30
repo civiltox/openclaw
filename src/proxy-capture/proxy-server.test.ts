@@ -9,6 +9,7 @@ import net, { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER } from "../infra/net/fetch-guard-capture.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import type { DebugProxySettings } from "./env.js";
 import { startDebugProxyServer } from "./proxy-server.js";
@@ -141,6 +142,54 @@ async function startResponseErrorOrigin(): Promise<{
   };
 }
 
+async function startSensitiveEchoOrigin(secret: string): Promise<{
+  receivedHeaders: () => IncomingMessage["headers"];
+  receivedRequestBody: () => string;
+  stop: () => Promise<void>;
+  url: string;
+}> {
+  let receivedBody = "";
+  let receivedHeaders: IncomingMessage["headers"] = {};
+  const server = createHttpServer((req, res) => {
+    receivedHeaders = req.headers;
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      receivedBody += chunk;
+    });
+    req.on("end", () => {
+      res.writeHead(200, {
+        "content-length": Buffer.byteLength(secret),
+        "content-type": "text/plain; charset=utf-8",
+        "x-echo-route": secret,
+      });
+      res.end(secret);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    receivedHeaders: () => receivedHeaders,
+    receivedRequestBody: () => receivedBody,
+    stop: async () =>
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      }),
+    url: `http://127.0.0.1:${address.port}/sensitive-echo`,
+  };
+}
+
 type ProxyResponseResult = {
   body: string;
   complete: boolean;
@@ -196,6 +245,7 @@ async function getThroughProxy(proxyUrl: string, targetUrl: string): Promise<Pro
 
 async function postThroughProxy(params: {
   body: string;
+  headers?: Record<string, string>;
   proxyUrl: string;
   targetUrl: string;
 }): Promise<string> {
@@ -211,6 +261,7 @@ async function postThroughProxy(params: {
           connection: "close",
           "content-length": Buffer.byteLength(params.body),
           "content-type": "text/plain; charset=utf-8",
+          ...params.headers,
         },
       },
       (res) => {
@@ -417,6 +468,52 @@ afterEach(async () => {
 });
 
 describe("startDebugProxyServer", () => {
+  it("fail-closes standalone captures marked as request-specific sensitive", async () => {
+    const settings = await makeSettings();
+    const secret = "staging-private-route";
+    const origin = await startSensitiveEchoOrigin(secret);
+    const proxy = await startDebugProxyServer({ settings });
+
+    try {
+      const responseBody = await postThroughProxy({
+        body: secret,
+        headers: {
+          [DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER]: "1",
+          "x-routing-target": secret,
+        },
+        proxyUrl: proxy.proxyUrl,
+        targetUrl: origin.url,
+      });
+
+      expect(responseBody).toBe(secret);
+      expect(origin.receivedRequestBody()).toBe(secret);
+      expect(origin.receivedHeaders()["x-routing-target"]).toBe(secret);
+      expect(origin.receivedHeaders()[DEBUG_PROXY_REDACT_ALL_CAPTURE_HEADER]).toBeUndefined();
+
+      const events = getDebugProxyCaptureStore().getSessionEvents(settings.sessionId, 10);
+      const capturedRequest = events.find((event) => event.kind === "request");
+      const capturedResponse = events.find((event) => event.kind === "response");
+      expect(JSON.stringify(events)).not.toContain(secret);
+      expect(capturedRequest).toMatchObject({
+        dataText: "[REDACTED]",
+        path: "[REDACTED]",
+      });
+      expect(capturedResponse).toMatchObject({
+        dataText: "[REDACTED]",
+        path: "[REDACTED]",
+      });
+      expect(JSON.parse(String(capturedRequest?.headersJson))).toMatchObject({
+        "x-routing-target": "[REDACTED]",
+      });
+      expect(JSON.parse(String(capturedResponse?.headersJson))).toMatchObject({
+        "x-echo-route": "[REDACTED]",
+      });
+    } finally {
+      await proxy.stop();
+      await origin.stop();
+    }
+  });
+
   it("caps UTF-8 previews on character boundaries while forwarding full bodies", async () => {
     const settings = await makeSettings();
     const origin = await startLargeBodyOrigin(`${"r".repeat(8191)}😀tail`);
