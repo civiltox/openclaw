@@ -214,7 +214,7 @@ export async function startDebugProxyServer(params: {
           kind: "error",
           flowId,
           method: req.method,
-          host: req.headers.host,
+          host: redactAllCapture ? REDACTED_CAPTURE_HEADER_VALUE : req.headers.host,
           path: redactAllCapture ? REDACTED_CAPTURE_HEADER_VALUE : (req.url ?? ""),
           errorText: redactProxyErrorText(
             error instanceof Error ? error.message : String(error),
@@ -245,7 +245,7 @@ export async function startDebugProxyServer(params: {
           protocol: targetProtocol,
           flowId,
           method: req.method,
-          host: target.host,
+          host: redactAllCapture ? REDACTED_CAPTURE_HEADER_VALUE : target.host,
           path: targetPath,
           ...event,
         });

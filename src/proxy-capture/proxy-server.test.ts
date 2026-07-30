@@ -496,10 +496,12 @@ describe("startDebugProxyServer", () => {
       expect(JSON.stringify(events)).not.toContain(secret);
       expect(capturedRequest).toMatchObject({
         dataText: "[REDACTED]",
+        host: "[REDACTED]",
         path: "[REDACTED]",
       });
       expect(capturedResponse).toMatchObject({
         dataText: "[REDACTED]",
+        host: "[REDACTED]",
         path: "[REDACTED]",
       });
       expect(JSON.parse(String(capturedRequest?.headersJson))).toMatchObject({
