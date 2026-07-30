@@ -60,6 +60,14 @@ export function tryResolveLegacyCompatibilityAgentId(config: OpenClawConfig): st
   return tryResolveSoleAgentId(config);
 }
 
+/** Resolves the physical owner of unscoped rows in a fixed legacy session store. */
+export function resolveSessionStoreCompatibilityAgentId(config: OpenClawConfig): string {
+  const persistedAgentId = config.agents?.defaults?.sessionStore?.agentId?.trim();
+  return persistedAgentId
+    ? normalizeAgentId(persistedAgentId)
+    : (tryResolveLegacyCompatibilityAgentId(config) ?? "main");
+}
+
 /** Adds per-surface warnings while a legacy first-entry owner is retained. */
 export function appendLegacyOwnershipWarnings(
   config: OpenClawConfig,

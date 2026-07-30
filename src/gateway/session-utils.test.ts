@@ -1723,6 +1723,22 @@ describe("gateway session utils", () => {
     );
   });
 
+  test("resolveSessionStoreKey preserves a persisted fixed-store owner", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        ownership: "explicit",
+        defaults: { sessionStore: { agentId: "ops" } },
+        entries: { ops: {}, research: {} },
+      },
+      session: { mainKey: "work", store: "/tmp/openclaw-fixed-sessions.json" },
+    };
+
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "main" })).toBe("agent:ops:work");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "incident-42" })).toBe(
+      "agent:ops:incident-42",
+    );
+  });
+
   test("resolveSessionStoreKey falls back to main when agents.list is missing", () => {
     const cfg = {
       session: { mainKey: "work" },

@@ -14,7 +14,7 @@ import {
   isSameOpenClawAgentDatabasePath,
   listOpenClawRegisteredAgentDatabases,
 } from "../../state/openclaw-agent-db-registry.js";
-import { tryResolveLegacyCompatibilityAgentId } from "../legacy.default-agent-owner.js";
+import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentsDirFromSessionStorePath, resolveStorePath } from "./paths.js";
@@ -30,6 +30,7 @@ import {
 
 export type { SessionStoreTarget } from "./targets-collision.js";
 export { dedupeSessionStoreTargetsBySqliteTarget } from "./targets-collision.js";
+export { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 
 /** CLI/session-store target selection options. */
 export type SessionStoreSelectionOptions = {
@@ -125,13 +126,6 @@ export function listConfiguredSessionStoreAgentIds(cfg: OpenClawConfig): string[
  * followed by a sole configured owner; ambiguous marker-free fleets stay on legacy `main`.
  * Registered and database-recorded owners still take precedence in the durable resolver.
  */
-export function resolveSessionStoreCompatibilityAgentId(cfg: OpenClawConfig): string {
-  const persistedAgentId = cfg.agents?.defaults?.sessionStore?.agentId?.trim();
-  return persistedAgentId
-    ? normalizeAgentId(persistedAgentId)
-    : (tryResolveLegacyCompatibilityAgentId(cfg) ?? LEGACY_IMPLICIT_AGENT_ID);
-}
-
 /** Lists configured owners plus persisted owners whose registered DB still matches this store. */
 export function listKnownSessionStoreAgentIds(
   cfg: OpenClawConfig,

@@ -8,7 +8,6 @@ import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-a
 import {
   canonicalizeMainSessionAlias,
   resolveAgentMainSessionKey,
-  resolveMainSessionKey,
 } from "../config/sessions/main-session.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -34,7 +33,10 @@ export function canonicalizeSessionKeyForAgent(agentId: string, key: string): st
 }
 
 function resolveDefaultStoreAgentId(cfg: OpenClawConfig): string {
-  return normalizeAgentId(tryResolveLegacyCompatibilityAgentId(cfg) ?? resolveDefaultAgentId(cfg));
+  const persistedAgentId = cfg.agents?.defaults?.sessionStore?.agentId?.trim();
+  return normalizeAgentId(
+    persistedAgentId ?? tryResolveLegacyCompatibilityAgentId(cfg) ?? resolveDefaultAgentId(cfg),
+  );
 }
 
 function shouldRemapLegacyDefaultMainAlias(
@@ -107,10 +109,13 @@ export function resolveSessionStoreKey(params: {
   const rawMainKey = normalizeMainKey(params.cfg.session?.mainKey);
   const storeAgentId = params.storeAgentId ? normalizeAgentId(params.storeAgentId) : undefined;
   if (lowered === "main" || lowered === rawMainKey) {
-    if (storeAgentId) {
-      return resolveAgentMainSessionKey({ cfg: params.cfg, agentId: storeAgentId });
+    if (params.cfg.session?.scope === "global") {
+      return "global";
     }
-    return resolveMainSessionKey(params.cfg);
+    return resolveAgentMainSessionKey({
+      cfg: params.cfg,
+      agentId: storeAgentId ?? resolveDefaultStoreAgentId(params.cfg),
+    });
   }
   const agentId = storeAgentId ?? resolveDefaultStoreAgentId(params.cfg);
   return canonicalizeSessionKeyForAgent(agentId, raw);

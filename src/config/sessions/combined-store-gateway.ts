@@ -9,12 +9,11 @@ import {
 } from "../../gateway/session-store-key.js";
 import {
   isIncognitoSessionKey,
-  LEGACY_IMPLICIT_AGENT_ID,
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { listOpenIncognitoAgentDatabases } from "../../state/openclaw-agent-db.js";
-import { tryResolveLegacyCompatibilityAgentId } from "../legacy.default-agent-owner.js";
+import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveStorePath } from "./paths.js";
 import { listSessionEntries, listSessionEntriesReadOnly } from "./session-accessor.js";
@@ -168,7 +167,7 @@ export function loadCombinedSessionStoreForGateway(
       ? normalizeAgentId(opts.agentId)
       : undefined;
   const defaultAgentId = normalizeAgentId(
-    requestedAgentId ?? tryResolveLegacyCompatibilityAgentId(cfg) ?? LEGACY_IMPLICIT_AGENT_ID,
+    requestedAgentId ?? resolveSessionStoreCompatibilityAgentId(cfg),
   );
   const configuredAgentIds =
     opts.configuredAgentsOnly === true && !requestedAgentId

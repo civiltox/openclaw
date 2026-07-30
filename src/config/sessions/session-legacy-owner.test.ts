@@ -58,4 +58,40 @@ describe("retained legacy session ownership", () => {
       ).resolves.toMatchObject({ appendedCount: 0 });
     });
   });
+
+  it("resolves persisted fixed-store ownership after restart", async () => {
+    await withTempHome(async (home) => {
+      const storePath = path.join(home, "sessions.json");
+      const cfg = {
+        agents: {
+          ownership: "explicit",
+          defaults: { sessionStore: { agentId: "ops" } },
+          entries: { ops: {}, research: {} },
+        },
+        session: { store: storePath },
+      } satisfies OpenClawConfig;
+      const scope = {
+        sessionId: "persisted-owner-session",
+        sessionKey: "main",
+        storePath,
+      };
+      await replaceSessionEntry(
+        { agentId: "ops", sessionKey: "main", storePath },
+        { sessionId: scope.sessionId, updatedAt: 1 },
+      );
+
+      expect(loadCombinedSessionStoreForGateway(cfg).store).toHaveProperty("agent:ops:main");
+      await expect(
+        persistSessionTranscriptTurn(scope, { config: cfg, messages: [], updateMode: "none" }),
+      ).resolves.toMatchObject({ appendedCount: 0 });
+      await expect(
+        persistSessionTranscriptTurn(scope, {
+          config: cfg,
+          expectedSessionId: scope.sessionId,
+          messages: [],
+          updateMode: "none",
+        }),
+      ).resolves.toMatchObject({ appendedCount: 0 });
+    });
+  });
 });
