@@ -358,7 +358,7 @@ describe("runGuidedOnboarding", () => {
       sourceConfig: syntheticConfig,
       runtimeConfig: syntheticConfig,
       config: syntheticConfig,
-    });
+    } as never);
     const prompter = createWizardPrompter();
     const deps = setupDeps({ prompter });
 
