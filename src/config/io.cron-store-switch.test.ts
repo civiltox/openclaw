@@ -94,6 +94,14 @@ describe("cron store switch ownership guard", () => {
     );
   });
 
+  it("allows an explicit-roster switch when a session key owns the destination job", async () => {
+    const fixture = await createStoreSwitchFixture([
+      { ...cronJob("session-owned"), sessionKey: "agent:ops:main" },
+    ]);
+
+    await expect(fixture.write()).resolves.toBeDefined();
+  });
+
   it("allows an implicit-main switch to ownerless destination jobs", async () => {
     const fixture = await createStoreSwitchFixture([cronJob("implicit-main")], null);
 

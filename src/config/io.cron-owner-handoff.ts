@@ -3,6 +3,7 @@ import {
   retainLegacyDefaultCronOwnerHandoffForStore,
 } from "../cron/legacy-default-agent-owner-handoff.js";
 import { beginLegacyDefaultOwnerHandoff } from "../cron/live-service-registry.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type CronOwnerHandoffTarget = {
@@ -14,8 +15,10 @@ function hasExplicitCronOwner(job: unknown): boolean {
   if (!job || typeof job !== "object" || Array.isArray(job)) {
     return false;
   }
-  const agentId = (job as { agentId?: unknown }).agentId;
-  return typeof agentId === "string" && agentId.trim().length > 0;
+  const record = job as { agentId?: unknown; sessionKey?: unknown };
+  const hasAgentId = typeof record.agentId === "string" && record.agentId.trim().length > 0;
+  const sessionKey = typeof record.sessionKey === "string" ? record.sessionKey : undefined;
+  return hasAgentId || parseAgentSessionKey(sessionKey)?.agentId !== undefined;
 }
 
 /** Refuses a store switch that would publish ownerless jobs under explicit ownership. */
