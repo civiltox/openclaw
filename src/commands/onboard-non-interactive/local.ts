@@ -180,7 +180,20 @@ export async function runNonInteractiveLocalSetup(params: {
     baseConfig,
     defaultWorkspaceDir: DEFAULT_WORKSPACE,
   });
-  const workspaceConflict = resolveOnboardingWorkspaceConflict(baseConfig, requestedWorkspaceDir);
+  const explicitWorkspaceRequested =
+    typeof opts.workspace === "string" && opts.workspace.trim().length > 0;
+  const selectedWorkspaceRequested = explicitWorkspaceRequested && Boolean(opts.agent?.trim());
+  if (params.agentRosterIncludeOwned === true && selectedWorkspaceRequested) {
+    const includedTarget = resolveOnboardingAgentTarget(baseConfig, opts.agent);
+    if (includedTarget.workspaceDir !== requestedWorkspaceDir) {
+      throw new Error(
+        `Cannot set agents.entries.${includedTarget.agentId}.workspace because the agent roster is $include-owned. Edit the included agent entry directly, then rerun setup.`,
+      );
+    }
+  }
+  const workspaceConflict = selectedWorkspaceRequested
+    ? undefined
+    : resolveOnboardingWorkspaceConflict(baseConfig, requestedWorkspaceDir);
   const workspaceDir = workspaceConflict?.currentWorkspaceDir ?? requestedWorkspaceDir;
   if (workspaceConflict) {
     runtime.error(
@@ -196,6 +209,9 @@ export async function runNonInteractiveLocalSetup(params: {
   let nextConfig: OpenClawConfig = applyLocalSetupWorkspaceConfig(
     baseConfig,
     requestedWorkspaceDir,
+    selectedWorkspaceRequested && params.agentRosterIncludeOwned !== true
+      ? { agentId: opts.agent }
+      : {},
   );
   if (opts.skipBootstrap) {
     nextConfig = applySkipBootstrapConfig(nextConfig);
@@ -271,8 +287,6 @@ export async function runNonInteractiveLocalSetup(params: {
     runtime,
     selectionDeps: { interactive: false },
   });
-  const explicitWorkspaceRequested =
-    typeof opts.workspace === "string" && opts.workspace.trim().length > 0;
   const currentTarget = resolveOnboardingAgentTarget(created.config, created.agentId);
   if (
     params.agentRosterIncludeOwned === true &&

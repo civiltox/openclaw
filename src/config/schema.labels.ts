@@ -649,6 +649,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.systemAgent.agentId": "System Agent Owner",
   "agents.defaults.authInheritance": "Auth Inheritance Target",
   "agents.defaults.authInheritance.agentId": "Auth Inheritance Owner",
+  "agents.defaults.sessionStore": "Legacy Session Store Target",
+  "agents.defaults.sessionStore.agentId": "Legacy Session Store Owner",
   "agents.defaults.sandbox.browser.network": "Sandbox Browser Network",
   "agents.defaults.sandbox.browser.cdpSourceRange": "Sandbox Browser CDP Source Port Range",
   "agents.defaults.sandbox.docker.dangerouslyAllowContainerNamespaceJoin":

@@ -329,16 +329,20 @@ describe("persisted implicit-main roster migration", () => {
     expect(migrated.retainedLegacyDefaultAgentId).toBe("10");
   });
 
-  it("does not persist a redundant auth inheritance owner for main or a sole agent", () => {
+  it("does not persist redundant compatibility owners for main or a sole agent", () => {
     const mainFleet = migratePersistedImplicitMainRoster({
+      session: { store: "/tmp/main-fleet-sessions.json" },
       agents: { entries: { main: { default: true }, ops: {} } },
     }).config as OpenClawConfig;
     const soleAgent = migratePersistedImplicitMainRoster({
+      session: { store: "/tmp/sole-ops-sessions.json" },
       agents: { entries: { ops: { default: true } } },
     }).config as OpenClawConfig;
 
     expect(mainFleet.agents?.defaults?.authInheritance).toBeUndefined();
+    expect(mainFleet.agents?.defaults?.sessionStore).toBeUndefined();
     expect(soleAgent.agents?.defaults?.authInheritance).toBeUndefined();
+    expect(soleAgent.agents?.defaults?.sessionStore).toBeUndefined();
   });
 
   it.each([

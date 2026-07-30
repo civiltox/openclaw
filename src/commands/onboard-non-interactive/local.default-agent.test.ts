@@ -254,6 +254,48 @@ describe("runNonInteractiveLocalSetup default-agent ownership", () => {
     );
   });
 
+  it("authenticates a selected agent in its requested workspace", async () => {
+    await runNonInteractiveLocalSetup({
+      opts: {
+        nonInteractive: true,
+        mode: "local",
+        agent: "ops",
+        workspace: "/tmp/new-ops-workspace",
+        authChoice: "demo-api-key",
+        skipHooks: true,
+        skipSkills: true,
+        skipHealth: true,
+        installDaemon: false,
+      },
+      runtime,
+      baseConfig: {
+        agents: {
+          ownership: "explicit",
+          entries: {
+            ops: { workspace: "/tmp/old-ops-workspace" },
+            research: {},
+          },
+        },
+      },
+    });
+
+    expect(mocks.applyAuthChoice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfig: expect.objectContaining({
+          agents: expect.objectContaining({
+            entries: expect.objectContaining({
+              ops: expect.objectContaining({ workspace: "/tmp/new-ops-workspace" }),
+            }),
+          }),
+        }),
+        target: expect.objectContaining({
+          agentId: "ops",
+          workspaceDir: "/tmp/new-ops-workspace",
+        }),
+      }),
+    );
+  });
+
   it("rejects changing an include-owned selected agent workspace", async () => {
     await expect(
       runNonInteractiveLocalSetup({
@@ -262,7 +304,7 @@ describe("runNonInteractiveLocalSetup default-agent ownership", () => {
           mode: "local",
           agent: "ops",
           workspace: "/tmp/new-ops-workspace",
-          authChoice: "skip",
+          authChoice: "demo-api-key",
           skipHooks: true,
           skipSkills: true,
           skipHealth: true,
@@ -283,6 +325,7 @@ describe("runNonInteractiveLocalSetup default-agent ownership", () => {
     ).rejects.toThrow(
       "Cannot set agents.entries.ops.workspace because the agent roster is $include-owned",
     );
+    expect(mocks.applyAuthChoice).not.toHaveBeenCalled();
     expect(mocks.commitConfig).not.toHaveBeenCalled();
   });
 });

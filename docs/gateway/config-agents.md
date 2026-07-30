@@ -626,6 +626,22 @@ Upgrade compatibility binding for inherited model credentials:
 
 Doctor writes this only when retiring a legacy non-`main` default marker would otherwise switch credential inheritance to the physical `main` store. Keep it until the H2-2 credential-relocation migration moves inherited credentials to their final per-agent stores; new fleets normally do not need to set it.
 
+### `agents.defaults.sessionStore`
+
+Upgrade compatibility binding for a fixed legacy session store:
+
+```json5
+{
+  agents: {
+    defaults: {
+      sessionStore: { agentId: "ops" },
+    },
+  },
+}
+```
+
+Doctor writes this only when retiring a legacy non-`main` default marker would otherwise reassign unscoped rows in a fixed `session.store`. Keep it until SQLite session migration records the store's owner; new fleets and per-agent session stores do not need to set it.
+
 ### `agents.defaults.compaction`
 
 ```json5

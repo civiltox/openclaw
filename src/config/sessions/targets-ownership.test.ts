@@ -36,6 +36,18 @@ describe("fixed session store ownership", () => {
     expect(resolveSessionStoreCompatibilityAgentId(restarted)).toBe("ops");
   });
 
+  it("keeps a shipped multi-agent fixed-store owner after migration and restart", () => {
+    const migrated = migratePersistedImplicitMainRoster({
+      session: { store: "/tmp/openclaw-multi-ops-sessions.json" },
+      agents: { entries: { ops: { default: true }, research: {} } },
+    });
+    const restarted = structuredClone(migrated.config) as OpenClawConfig;
+
+    expect(restarted.agents?.entries?.ops?.default).toBeUndefined();
+    expect(restarted.agents?.defaults?.sessionStore?.agentId).toBe("ops");
+    expect(resolveSessionStoreCompatibilityAgentId(restarted)).toBe("ops");
+  });
+
   it("falls back from a departed retained owner to the sole live agent", () => {
     const cfg = retainLegacyDefaultAgentId({ agents: { entries: { research: {} } } }, "ops");
 

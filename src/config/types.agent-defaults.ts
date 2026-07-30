@@ -328,6 +328,10 @@ export type AgentDefaultsConfig = {
   authInheritance?: {
     agentId?: string;
   };
+  /** Upgrade-only owner for legacy fixed session stores until SQLite records ownership. */
+  sessionStore?: {
+    agentId?: string;
+  };
   /** Max concurrent agent runs across all conversations. Default: min(16, max(8, available CPU parallelism)). */
   maxConcurrent?: number;
   /** Sub-agent defaults (spawned via sessions_spawn). */

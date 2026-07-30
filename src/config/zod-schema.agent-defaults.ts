@@ -213,6 +213,12 @@ export const AgentDefaultsSchema = z
       })
       .strict()
       .optional(),
+    sessionStore: z
+      .object({
+        agentId: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     maxConcurrent: z.number().int().positive().optional(),
     subagents: z
       .object({

@@ -53,7 +53,7 @@ describe("explicit ambient agent targets", () => {
     }
   });
 
-  it("accepts configured heartbeat, system-agent, auth-inheritance, and Talk targets", () => {
+  it("accepts configured heartbeat, system-agent, compatibility, and Talk targets", () => {
     expect(
       OpenClawSchema.safeParse({
         agents: {
@@ -61,6 +61,7 @@ describe("explicit ambient agent targets", () => {
             heartbeat: { agentId: "ops" },
             systemAgent: { agentId: "ops" },
             authInheritance: { agentId: "ops" },
+            sessionStore: { agentId: "ops" },
           },
           entries: { ops: {} },
         },
@@ -88,6 +89,12 @@ describe("explicit ambient agent targets", () => {
         entries: { main: {} },
       },
     },
+    {
+      agents: {
+        defaults: { sessionStore: { agentId: " " } },
+        entries: { main: {} },
+      },
+    },
     { agents: { entries: { main: {} } }, talk: { agentId: " " } },
   ])("rejects blank explicit targets", (config) => {
     expect(OpenClawSchema.safeParse(config).success).toBe(false);
@@ -98,12 +105,15 @@ describe("explicit ambient agent targets", () => {
     expect(OpenClawSchema.safeParse({ talk: { agentId: "missing" } }).success).toBe(false);
   });
 
-  it("allows the inherited credential owner to outlive its roster entry", () => {
+  it("allows upgrade compatibility owners to outlive their roster entries", () => {
     expect(
       OpenClawSchema.safeParse({
         agents: {
           ownership: "explicit",
-          defaults: { authInheritance: { agentId: "retired-ops" } },
+          defaults: {
+            authInheritance: { agentId: "retired-ops" },
+            sessionStore: { agentId: "retired-ops" },
+          },
           entries: { research: {}, writer: {} },
         },
       }).success,

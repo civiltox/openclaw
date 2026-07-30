@@ -6,6 +6,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace-default.js"
 import { normalizeRouteBindingChannelId } from "../routing/binding-scope.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { isRecord, resolveUserPath } from "../utils.js";
+import { isPerAgentSessionStoreConfig } from "./sessions/targets.js";
 import type { AgentRouteBinding } from "./types.agents.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
@@ -265,6 +266,37 @@ export function materializeLegacyDefaultAgentRoles(
     warnings.push({
       path: "agents.defaults.authInheritance.agentId",
       message: `legacy upgrade keeps inherited credentials in agent "${defaultAgentId}" until H2-2 relocation; keep this binding until credential relocation completes`,
+    });
+  }
+
+  const rawSessionStore = defaultsConfig?.sessionStore;
+  const sessionStoreConfig = isRecord(rawSessionStore) ? rawSessionStore : undefined;
+  const fixedSessionFallbackAgentId = tryResolveSoleAgentId(cfg) ?? "main";
+  if (
+    !isPerAgentSessionStoreConfig(cfg.session?.store) &&
+    defaultAgentId !== normalizeAgentId(fixedSessionFallbackAgentId) &&
+    canMaterializeDefaults &&
+    (rawSessionStore === undefined || sessionStoreConfig !== undefined) &&
+    (!sessionStoreConfig || !Object.hasOwn(sessionStoreConfig, "agentId"))
+  ) {
+    next = {
+      ...next,
+      agents: {
+        ...next.agents,
+        defaults: {
+          ...next.agents?.defaults,
+          sessionStore: {
+            ...next.agents?.defaults?.sessionStore,
+            agentId: defaultAgentId,
+          },
+        },
+      },
+    };
+    changes.push(`Preserved fixed session-store ownership for agent "${defaultAgentId}".`);
+    insertedPaths.push(["agents", "defaults", "sessionStore", "agentId"]);
+    warnings.push({
+      path: "agents.defaults.sessionStore.agentId",
+      message: `legacy upgrade keeps unscoped fixed-store sessions owned by agent "${defaultAgentId}" until SQLite session migration records their owner`,
     });
   }
 
