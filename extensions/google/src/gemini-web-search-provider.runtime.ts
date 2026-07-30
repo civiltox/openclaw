@@ -104,7 +104,7 @@ const PROVIDER_OWNED_HEADER_NAMES = new Set([
 const FETCH_OWNED_HEADER_NAMES = new Set(["sec-fetch-mode"]);
 // The guarded transport may attach this private marker for the standalone debug
 // proxy and strips it before forwarding. Operators cannot override that contract.
-const OPENCLAW_OWNED_HEADER_NAMES = new Set(["x-openclaw-debug-proxy-redact-all"]);
+const RESERVED_TRANSPORT_HEADER_NAMES = new Set(["x-openclaw-debug-proxy-redact-all"]);
 
 // Config env substitution warns and preserves the placeholder when a variable is
 // unset, so an unresolved reference would otherwise be sent verbatim.
@@ -144,7 +144,7 @@ function resolveGeminiWebSearchHeaders(params: {
     if (FETCH_OWNED_HEADER_NAMES.has(name)) {
       throwInvalidGeminiHeader(rawName, "reserved for the Fetch request contract");
     }
-    if (OPENCLAW_OWNED_HEADER_NAMES.has(name)) {
+    if (RESERVED_TRANSPORT_HEADER_NAMES.has(name)) {
       throwInvalidGeminiHeader(rawName, "reserved for the OpenClaw request contract");
     }
     if (typeof rawValue !== "string") {
