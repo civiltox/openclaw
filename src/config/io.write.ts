@@ -86,6 +86,7 @@ import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./nix-mode-write-guard.js";
 import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
+import { resolveStorePath } from "./sessions/paths.js";
 import { isPerAgentSessionStoreConfig } from "./sessions/session-store-config.js";
 import type { OpenClawConfig } from "./types.js";
 import {
@@ -143,6 +144,14 @@ export async function writeConfigFileFromContext(
   const previousAgentCount = previousAgentEntries.length;
   const nextAgentEntries = listAgentEntries(nextConfig);
   const nextAgentIds = new Set(nextAgentEntries.map((entry) => normalizeAgentId(entry.id)));
+  const sourceSessionStoreConfig = (snapshot.sourceConfigBeforeMigrations ?? snapshot.config)
+    .session?.store;
+  const nextSessionStoreConfig = nextConfig.session?.store;
+  const keepsSameFixedSessionStore =
+    !isPerAgentSessionStoreConfig(sourceSessionStoreConfig) &&
+    !isPerAgentSessionStoreConfig(nextSessionStoreConfig) &&
+    resolveStorePath(sourceSessionStoreConfig, { env: deps.env }) ===
+      resolveStorePath(nextSessionStoreConfig, { env: deps.env });
   // Stamp topology transitions and retained legacy owners independently from sole-agent handoff.
   const entersMultiAgent = previousAgentCount <= 1 && nextAgentEntries.length > 1;
   const previousSoleRemains =
@@ -198,7 +207,7 @@ export async function writeConfigFileFromContext(
     entersMultiAgent &&
     previousSoleAgentId &&
     !previousSoleRemains &&
-    !isPerAgentSessionStoreConfig(nextConfig.session?.store) &&
+    keepsSameFixedSessionStore &&
     !nextConfig.agents?.defaults?.sessionStore?.agentId
   ) {
     // A removed sole agent can still physically own unscoped fixed-store rows.

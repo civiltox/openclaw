@@ -40,6 +40,7 @@ async function createStoreSwitchFixture(
   options: {
     declarePaths?: boolean;
     nextAgents?: OpenClawConfig["agents"];
+    nextSessionStore?: string;
     sessionStore?: string;
     switchStore?: boolean;
   } = {},
@@ -73,6 +74,7 @@ async function createStoreSwitchFixture(
   const nextConfig = {
     ...snapshot.config,
     ...(options.nextAgents ? { agents: options.nextAgents } : {}),
+    ...(options.nextSessionStore ? { session: { store: options.nextSessionStore } } : {}),
     cron: { ...(snapshot.config.cron as object), store: targetStorePath },
   } as OpenClawConfig;
   const allowedAgentRosterRemovals = options.nextAgents
@@ -267,5 +269,30 @@ describe("cron store switch ownership guard", () => {
     await expect(fixture.write()).resolves.toBeDefined();
     const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
     expect(persisted.agents?.defaults?.sessionStore?.agentId).toBe("ops");
+  });
+
+  it("does not stamp a removed sole owner onto a different fixed session store", async () => {
+    const root = tempDirs.make("openclaw-foreign-session-store-");
+    const sourceSessionStore = path.join(root, "source-sessions.json");
+    const destinationSessionStore = path.join(root, "destination-sessions.json");
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("owned", "research")],
+      { entries: { ops: {} } },
+      {
+        sessionStore: sourceSessionStore,
+        nextSessionStore: destinationSessionStore,
+        declarePaths: false,
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { research: {}, writer: {} },
+        },
+      },
+    );
+
+    await expect(fixture.write()).resolves.toBeDefined();
+    const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
+    expect(persisted.session?.store).toBe(destinationSessionStore);
+    expect(persisted.agents?.defaults?.sessionStore?.agentId).toBeUndefined();
   });
 });

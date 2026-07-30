@@ -28,7 +28,9 @@ function job(id: string): CronJob {
 }
 
 function runtimeBaseline(store: CronStoreFile) {
-  return new Map(store.jobs.map((entry) => [entry.id, structuredClone(entry.state ?? {})]));
+  return new Map<string, CronJob["state"]>(
+    store.jobs.map((entry) => [entry.id, structuredClone(entry.state ?? {})]),
+  );
 }
 
 describe("cron state-only runtime deltas", () => {
@@ -77,5 +79,31 @@ describe("cron state-only runtime deltas", () => {
         expectedRuntimeStateByJobId: conflictBaseline,
       }),
     ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
+  });
+
+  it("accepts an explicitly undefined baseline for matching empty state", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    baseline.set("runtime-a", undefined);
+    const concurrent = structuredClone(loaded.store);
+    const stale = structuredClone(loaded.store);
+    concurrent.jobs[1]!.state = { nextRunAtMs: 202 };
+
+    await saveCronJobsStore(storePath, concurrent, {
+      stateOnly: true,
+      expectedStoreEpoch: loaded.storeEpoch,
+      expectedRuntimeRevision: loaded.runtimeRevision,
+      expectedRuntimeStateByJobId: baseline,
+    });
+    await expect(
+      saveCronJobsStore(storePath, stale, {
+        stateOnly: true,
+        expectedStoreEpoch: loaded.storeEpoch,
+        expectedRuntimeRevision: loaded.runtimeRevision,
+        expectedRuntimeStateByJobId: baseline,
+      }),
+    ).resolves.toBeDefined();
   });
 });

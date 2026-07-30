@@ -487,6 +487,7 @@ export function listChannelIdsForOwnershipMigration(
     "includePersistedAuthState"
   >,
 ): string[] {
+  // Persisted auth is migration evidence only; it must never reactivate a channel at startup.
   return listChannelIdsForGatewayPolicy(params, true);
 }
 

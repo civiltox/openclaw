@@ -43,10 +43,11 @@ export function writeCronRuntimeRowDeltas(params: {
   for (const job of params.store.jobs) {
     if (revisionChanged) {
       const current = currentStates?.get(job.id);
-      const expected = params.expectedRuntimeStateByJobId?.get(job.id);
-      if (!current || expected === undefined) {
+      const hasExpected = params.expectedRuntimeStateByJobId?.has(job.id) === true;
+      if (!current || !hasExpected) {
         throw params.conflictError();
       }
+      const expected = params.expectedRuntimeStateByJobId?.get(job.id) ?? {};
       const resolution = resolveCronRuntimeDelta({
         current: current.state,
         next: job.state ?? {},

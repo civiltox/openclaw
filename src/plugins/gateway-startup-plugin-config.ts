@@ -84,7 +84,7 @@ function listPotentialEnabledChannelIds(
   const disabled = new Set(listExplicitlyDisabledChannelIdsForConfig(config));
   return sortUniquePluginIds([
     ...listPotentialConfiguredChannelIds(config, env, {
-      includePersistedAuthState: options.includePersistedAuthState ?? true,
+      includePersistedAuthState: options.includePersistedAuthState ?? false,
       ambientEnvTriggers: options.ambientEnvTriggers,
     }),
     ...listExplicitConfiguredChannelIdsForConfig(config),
