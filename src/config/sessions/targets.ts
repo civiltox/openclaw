@@ -23,6 +23,7 @@ import {
   listDurableSqliteTargetOwnersForSessionStorePath,
   resolveSqliteTargetFromSessionStorePath,
 } from "./session-sqlite-target.js";
+import { isPerAgentSessionStoreConfig } from "./session-store-config.js";
 import {
   dedupeSessionStoreTargetsBySqliteTarget,
   type SessionStoreTarget,
@@ -31,6 +32,7 @@ import {
 export type { SessionStoreTarget } from "./targets-collision.js";
 export { dedupeSessionStoreTargetsBySqliteTarget } from "./targets-collision.js";
 export { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
+export { isPerAgentSessionStoreConfig } from "./session-store-config.js";
 
 /** CLI/session-store target selection options. */
 export type SessionStoreSelectionOptions = {
@@ -192,12 +194,6 @@ export function listKnownSessionStoreAgentIds(
 export function isConfiguredSessionStoreAgentId(cfg: OpenClawConfig, agentId: string): boolean {
   const normalizedAgentId = normalizeAgentId(agentId);
   return listConfiguredSessionStoreAgentIds(cfg).includes(normalizedAgentId);
-}
-
-/** Whether session.store resolves to a distinct store for each agent. */
-export function isPerAgentSessionStoreConfig(storeConfig: string | undefined): boolean {
-  const normalized = storeConfig?.trim();
-  return !normalized || normalized.includes("{agentId}");
 }
 
 function resolveValidatedDiscoveredStorePathSync(params: {

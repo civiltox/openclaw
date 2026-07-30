@@ -90,7 +90,7 @@ import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./nix-mode-write-guard.js";
 import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
-import { isPerAgentSessionStoreConfig } from "./sessions/targets.js";
+import { isPerAgentSessionStoreConfig } from "./sessions/session-store-config.js";
 import type { OpenClawConfig } from "./types.js";
 import {
   materializeLegacyAgentOwnershipForActiveChannelsResult,

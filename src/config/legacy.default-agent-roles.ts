@@ -6,7 +6,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace-default.js"
 import { normalizeRouteBindingChannelId } from "../routing/binding-scope.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { isRecord, resolveUserPath } from "../utils.js";
-import { isPerAgentSessionStoreConfig } from "./sessions/targets.js";
+import { isPerAgentSessionStoreConfig } from "./sessions/session-store-config.js";
 import type { AgentRouteBinding } from "./types.agents.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getRuntimeConfig } from "../io.js";
-import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
+import {
+  resolveSessionStoreCompatibilityAgentId,
+  tryResolveLegacyCompatibilityAgentId,
+} from "../legacy.default-agent-owner.js";
+import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveStorePath } from "./paths.js";
 import { updateSessionEntry } from "./session-accessor.entry-mutation.js";
 import {
@@ -25,8 +29,15 @@ import type {
   SessionTranscriptTurnPersistOptions,
   SessionTranscriptTurnPersistResult,
 } from "./session-accessor.types.js";
+import { isPerAgentSessionStoreConfig } from "./session-store-config.js";
 import { runWithOwnedSessionTranscriptWriteLock } from "./transcript-write-context.js";
 import type { SessionEntry } from "./types.js";
+
+function resolveTranscriptCompatibilityAgentId(config: OpenClawConfig): string | undefined {
+  return isPerAgentSessionStoreConfig(config.session?.store)
+    ? tryResolveLegacyCompatibilityAgentId(config)
+    : resolveSessionStoreCompatibilityAgentId(config);
+}
 
 /** Appends one prepared ordered group in the existing transcript turn transaction. */
 export async function appendTranscriptMessages<TMessage>(
@@ -191,7 +202,7 @@ async function persistExpectedSessionTranscriptTurn(
     scope.agentId ??
     resolveAgentIdFromSessionKey(
       sessionKey,
-      resolveSessionStoreCompatibilityAgentId(options.config ?? getRuntimeConfig()),
+      resolveTranscriptCompatibilityAgentId(options.config ?? getRuntimeConfig()),
     );
   if (!agentId) {
     throw new Error(`Cannot resolve transcript turn without an agent id: ${sessionKey}`);
@@ -285,7 +296,7 @@ async function resolveTranscriptTurnTarget(
     scope.agentId ??
     resolveAgentIdFromSessionKey(
       sessionKey,
-      resolveSessionStoreCompatibilityAgentId(config ?? getRuntimeConfig()),
+      resolveTranscriptCompatibilityAgentId(config ?? getRuntimeConfig()),
     );
   if (!agentId) {
     throw new Error(`Cannot resolve transcript turn without an agent id: ${sessionKey}`);

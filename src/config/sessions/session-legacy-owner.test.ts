@@ -100,4 +100,31 @@ describe("retained legacy session ownership", () => {
       ).resolves.toMatchObject({ appendedCount: 0 });
     });
   });
+
+  it("requires an owner for bare transcript turns in an explicit per-agent store", async () => {
+    const cfg = {
+      agents: {
+        ownership: "explicit",
+        entries: { ops: {}, research: {} },
+      },
+      session: { store: "/tmp/openclaw/{agentId}/sessions.json" },
+    } satisfies OpenClawConfig;
+    const scope = {
+      sessionId: "ownerless-template-session",
+      sessionKey: "main",
+      storePath: "/tmp/openclaw/ops/sessions.json",
+    };
+
+    await expect(
+      persistSessionTranscriptTurn(scope, { config: cfg, messages: [], updateMode: "none" }),
+    ).rejects.toThrow("Session key does not contain an agent id");
+    await expect(
+      persistSessionTranscriptTurn(scope, {
+        config: cfg,
+        expectedSessionId: scope.sessionId,
+        messages: [],
+        updateMode: "none",
+      }),
+    ).rejects.toThrow("Session key does not contain an agent id");
+  });
 });
