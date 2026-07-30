@@ -35,7 +35,7 @@ export function assertAutomaticBindingsWriteAllowed(params: {
   if (requiredBindings.length === 0) {
     return;
   }
-  const required = requiredBindings.map(bindingIdentity).join(", ");
+  const required = requiredBindings.map((binding) => JSON.stringify(binding)).join(", ");
   throw Object.assign(
     new Error(
       `Automatic agent ownership materialization cannot append to $include-owned bindings. Add ${required || "the required channel-wide binding"} to the bindings include, then retry.`,
