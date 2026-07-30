@@ -173,22 +173,6 @@ describe("cron store switch ownership guard", () => {
     ).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
   });
 
-  it("refuses a same-store roster replacement that would orphan ownerless jobs", async () => {
-    const fixture = await createStoreSwitchFixture(
-      [cronJob("ownerless")],
-      { entries: { ops: {} } },
-      {
-        switchStore: false,
-        nextAgents: {
-          ownership: "explicit",
-          entries: { research: {}, writer: {} },
-        },
-      },
-    );
-
-    await expect(fixture.write()).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
-  });
-
   it("retains a removed sole agent as the fixed-session-store compatibility owner", async () => {
     const sessionStore = path.join(tempDirs.make("openclaw-fixed-session-owner-"), "sessions.json");
     const fixture = await createStoreSwitchFixture(

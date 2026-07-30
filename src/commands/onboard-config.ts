@@ -86,40 +86,46 @@ export function applyLocalSetupWorkspaceConfig(
   );
   const hasRoster = listAgentEntries(baseConfig).length > 0;
   const selectedAgentId = options.agentId?.trim() ? normalizeAgentId(options.agentId) : undefined;
+  const selectedAgentExists = selectedAgentId
+    ? listAgentEntries(baseConfig).some((entry) => normalizeAgentId(entry.id) === selectedAgentId)
+    : false;
   const shouldUpdateWorkspace =
     !options.preserveWorkspace &&
     (Boolean(selectedAgentId) ||
       options.allowWorkspaceChange ||
       (!hasRoster && !workspaceConflict));
-  const selectedWorkspaceRoster = selectedAgentId
-    ? baseConfig.agents?.entries
-      ? {
-          entries: Object.fromEntries(
-            Object.entries(baseConfig.agents.entries).map(([id, entry]) => [
-              id,
-              normalizeAgentId(id) === selectedAgentId
-                ? { ...entry, workspace: workspaceDir }
-                : entry,
-            ]),
-          ),
-        }
-      : Array.isArray(baseConfig.agents?.list)
+  const selectedWorkspaceRoster =
+    selectedAgentId && selectedAgentExists
+      ? baseConfig.agents?.entries
         ? {
-            list: baseConfig.agents.list.map((entry) =>
-              normalizeAgentId(entry.id) === selectedAgentId
-                ? { ...entry, workspace: workspaceDir }
-                : entry,
+            entries: Object.fromEntries(
+              Object.entries(baseConfig.agents.entries).map(([id, entry]) => [
+                id,
+                normalizeAgentId(id) === selectedAgentId
+                  ? { ...entry, workspace: workspaceDir }
+                  : entry,
+              ]),
             ),
           }
-        : {}
-    : undefined;
+        : Array.isArray(baseConfig.agents?.list)
+          ? {
+              list: baseConfig.agents.list.map((entry) =>
+                normalizeAgentId(entry.id) === selectedAgentId
+                  ? { ...entry, workspace: workspaceDir }
+                  : entry,
+              ),
+            }
+          : {}
+      : selectedAgentId && !hasRoster
+        ? { entries: { [selectedAgentId]: { workspace: workspaceDir } } }
+        : undefined;
   return {
     ...baseConfig,
     ...(shouldUpdateWorkspace
       ? {
           agents: {
             ...baseConfig.agents,
-            ...(selectedAgentId
+            ...(selectedAgentId && selectedWorkspaceRoster
               ? selectedWorkspaceRoster
               : {
                   defaults: {

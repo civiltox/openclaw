@@ -303,7 +303,7 @@ export async function runNonInteractiveLocalSetup(params: {
       : applyLocalSetupWorkspaceConfig(
           created.config,
           requestedWorkspaceDir,
-          explicitWorkspaceRequested ? { agentId: created.agentId } : {},
+          explicitWorkspaceRequested && !workspaceConflict ? { agentId: created.agentId } : {},
         );
   // First-agent creation is the first permitted config mutation. Preserve its
   // resulting hash so the canonical wizard write still rejects foreign edits.
