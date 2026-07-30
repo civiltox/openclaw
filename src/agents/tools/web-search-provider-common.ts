@@ -6,6 +6,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeResolvedSecretInputString } from "../../config/types.secrets.js";
+import type { GuardedFetchCaptureOptions } from "../../infra/net/fetch-guard-capture.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import {
@@ -93,6 +94,8 @@ export async function withTrustedWebSearchEndpoint<T>(
     timeoutSeconds: number;
     init: RequestInit;
     signal?: AbortSignal;
+    stripHeadersOnCrossOriginRedirect?: string[];
+    capture?: GuardedFetchCaptureOptions;
   },
   run: (response: Response) => Promise<T>,
 ): Promise<T> {
@@ -103,6 +106,8 @@ export async function withTrustedWebSearchEndpoint<T>(
       init: params.init,
       timeoutSeconds: params.timeoutSeconds,
       signal: params.signal,
+      stripHeadersOnCrossOriginRedirect: params.stripHeadersOnCrossOriginRedirect,
+      capture: params.capture,
     },
     async ({ response }) => run(response),
   );

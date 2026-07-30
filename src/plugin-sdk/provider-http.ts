@@ -1,6 +1,7 @@
 // Shared provider-facing HTTP helpers. Keep generic transport utilities here so
 // capability SDKs do not depend on each other.
 
+export { redactOpaqueValuesInText } from "@openclaw/normalization-core/opaque-value-redaction";
 export {
   inspectTlsCertificateError,
   type TlsCertificateErrorDetails,

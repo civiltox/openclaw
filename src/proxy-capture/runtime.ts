@@ -1,14 +1,18 @@
 // Proxy capture runtime coordinates capture sessions, proxy startup, and storage.
-import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
-import { normalizeRequestInitHeadersForFetch } from "../infra/fetch-headers.js";
 import {
-  hasRegisteredSecretValuesForRedaction,
-  redactRegisteredSecretValues,
-} from "../logging/secret-redaction-registry.js";
+  normalizeHeadersInitForFetch,
+  normalizeRequestInitHeadersForFetch,
+} from "../infra/fetch-headers.js";
 import { resolveDebugProxySettings, type DebugProxySettings } from "./env.js";
-import { redactedCaptureHeaders, REDACTED_CAPTURE_HEADER_VALUE } from "./header-redaction.js";
+import {
+  redactCapturePayload,
+  redactCaptureText,
+  redactCaptureUrl,
+  redactedCaptureHeaders,
+  redactedCaptureJson,
+} from "./redaction.js";
 import {
   closeDebugProxyCaptureStore,
   getDebugProxyCaptureStore,
@@ -23,7 +27,6 @@ import type {
 } from "./types.js";
 
 const DEBUG_PROXY_FETCH_PATCH_KEY = Symbol.for("openclaw.debugProxy.fetchPatch");
-const REDACTED_CAPTURE_BINARY_PAYLOAD = Buffer.from("[REDACTED BINARY PAYLOAD]", "utf8");
 // Cap captured response bodies so debug proxy capture cannot be turned into an
 // out-of-memory vector. The patched global fetch tees every outbound response
 // through clone(), so a single large (or hostile, effectively endless) provider
@@ -91,7 +94,6 @@ async function readCapturedResponseBodyBounded(
     ? { status: "too-large" }
     : { status: "captured", buffer: Buffer.concat(chunks, total) };
 }
-
 function parseDeclaredCaptureContentLength(raw: string | null | undefined): bigint | undefined {
   if (raw === null || raw === undefined) {
     return undefined;
@@ -112,6 +114,16 @@ type GlobalFetchPatchedState = {
 type GlobalFetchPatchTarget = typeof globalThis & {
   [DEBUG_PROXY_FETCH_PATCH_KEY]?: GlobalFetchPatchedState;
 };
+
+const suppressedGlobalFetchCaptureInits = new WeakSet<RequestInit>();
+
+/**
+ * Skips the ambient global-fetch capture for one exact init object. Callers that
+ * need request-specific redaction can then record the exchange themselves.
+ */
+export function suppressDebugProxyGlobalFetchCaptureOnce(init: RequestInit): void {
+  suppressedGlobalFetchCaptureInits.add(init);
+}
 
 type DebugProxyCaptureStoreLike = Pick<
   ReturnType<typeof getDebugProxyCaptureStore>,
@@ -173,97 +185,6 @@ function resolveUrlString(input: RequestInfo | URL): string | null {
   return null;
 }
 
-function redactCaptureUrl(rawUrl: string): string {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return "https://redacted.invalid/%5BREDACTED%5D";
-  }
-  const redactComponent = (value: string) =>
-    redactRegisteredSecretValues(value, () => REDACTED_CAPTURE_HEADER_VALUE);
-  const decodeComponent = (value: string) => {
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
-    }
-  };
-  if (redactComponent(url.hostname) !== url.hostname) {
-    url.hostname = "redacted.invalid";
-  }
-  for (const key of ["username", "password"] as const) {
-    const decoded = decodeComponent(url[key]);
-    const redacted = redactComponent(decoded);
-    if (redacted !== decoded) {
-      url[key] = redacted;
-    }
-  }
-  url.pathname = url.pathname
-    .split("/")
-    .map((segment) => {
-      try {
-        const decoded = decodeURIComponent(segment);
-        const redacted = redactComponent(decoded);
-        return redacted === decoded ? segment : encodeURIComponent(redacted);
-      } catch {
-        return segment;
-      }
-    })
-    .join("/");
-  const searchParams = new URLSearchParams();
-  let searchChanged = false;
-  for (const [name, value] of url.searchParams.entries()) {
-    const redactedName = redactComponent(name);
-    const redactedValue = redactComponent(value);
-    searchParams.append(redactedName, redactedValue);
-    if (redactedName !== name || redactedValue !== value) {
-      searchChanged = true;
-    }
-  }
-  if (searchChanged) {
-    url.search = searchParams.toString();
-  }
-  const decodedHash = decodeComponent(url.hash.slice(1));
-  const redactedHash = redactComponent(decodedHash);
-  if (redactedHash !== decodedHash) {
-    url.hash = redactedHash;
-  }
-  const serialized = url.toString();
-  return redactComponent(serialized) === serialized
-    ? serialized
-    : `${url.protocol}//redacted.invalid/%5BREDACTED%5D`;
-}
-
-function redactCaptureText(value: string): string {
-  return redactRegisteredSecretValues(value, () => REDACTED_CAPTURE_HEADER_VALUE);
-}
-
-function redactCapturePayload(value: string | Buffer | null | undefined): string | Buffer | null {
-  if (typeof value === "string") {
-    return redactCaptureText(value);
-  }
-  if (!Buffer.isBuffer(value)) {
-    return value ?? null;
-  }
-  if (!isUtf8(value)) {
-    // Binary frames can mix arbitrary bytes with credential text. Once any
-    // resolved secret exists, omit their contents instead of guessing safely.
-    return hasRegisteredSecretValuesForRedaction() ? REDACTED_CAPTURE_BINARY_PAYLOAD : value;
-  }
-  const text = value.toString("utf8");
-  const redacted = redactCaptureText(text);
-  return redacted === text ? value : Buffer.from(redacted, "utf8");
-}
-
-function redactedCaptureJson(
-  value: unknown,
-  stringify: typeof safeJsonString = safeJsonString,
-): string | undefined {
-  const serialized = stringify(value);
-  return serialized === undefined ? undefined : redactCaptureText(serialized);
-}
-
 function createHttpCaptureEventBase(params: {
   settings: DebugProxySettings;
   rawUrl: string;
@@ -289,6 +210,42 @@ function createHttpCaptureEventBase(params: {
   };
 }
 
+function recordHttpCaptureError(
+  params: {
+    url: string;
+    method: string;
+    error: unknown;
+    transport?: "http" | "sse";
+    flowId?: string;
+    meta?: Record<string, unknown>;
+    sensitiveValues?: Iterable<string>;
+  },
+  settings: DebugProxySettings,
+  deps: DebugProxyCaptureRuntimeDeps,
+): void {
+  const runtime = resolveRuntimeDeps(deps);
+  const sensitiveValues = [...(params.sensitiveValues ?? [])];
+  const captureUrl = redactCaptureUrl(params.url, sensitiveValues);
+  const url = new URL(captureUrl);
+  runtime.getStore().recordEvent({
+    ...createHttpCaptureEventBase({
+      settings,
+      rawUrl: captureUrl,
+      url,
+      transport: params.transport,
+      direction: "local",
+      kind: "error",
+      flowId: params.flowId ?? randomUUID(),
+      method: params.method,
+    }),
+    errorText: redactCaptureText(
+      params.error instanceof Error ? params.error.message : String(params.error),
+      sensitiveValues,
+    ),
+    metaJson: redactedCaptureJson(params.meta, runtime.safeJsonString, sensitiveValues),
+  });
+}
+
 function installDebugProxyGlobalFetchPatch(
   settings: DebugProxySettings,
   deps: DebugProxyCaptureRuntimeDeps = {},
@@ -308,11 +265,12 @@ function installDebugProxyGlobalFetchPatch(
   fetchTarget[DEBUG_PROXY_FETCH_PATCH_KEY] = { originalFetch };
   const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = resolveUrlString(input);
+    const suppressCapture = init ? suppressedGlobalFetchCaptureInits.delete(init) : false;
     const normalizedInit = normalizeRequestInitHeadersForFetch(init);
     try {
       const response = await originalFetch(input, normalizedInit);
-      if (url && /^https?:/i.test(url)) {
-        captureHttpExchange(
+      if (!suppressCapture && url && /^https?:/i.test(url)) {
+        captureHttpExchangeInternal(
           {
             url,
             method:
@@ -324,8 +282,7 @@ function installDebugProxyGlobalFetchPatch(
             requestHeaders:
               (typeof Request !== "undefined" && input instanceof Request
                 ? input.headers
-                : undefined) ??
-              (normalizedInit?.headers as Headers | Record<string, string> | undefined),
+                : undefined) ?? normalizedInit?.headers,
             requestBody:
               (typeof Request !== "undefined" && input instanceof Request
                 ? (input as Request & { body?: BodyInit | null }).body
@@ -345,30 +302,22 @@ function installDebugProxyGlobalFetchPatch(
       }
       return response;
     } catch (error) {
-      if (url && /^https?:/i.test(url)) {
-        const store = runtime.getStore();
-        const captureUrl = redactCaptureUrl(url);
-        const parsed = new URL(captureUrl);
-        store.recordEvent({
-          sessionId: settings.sessionId,
-          ts: Date.now(),
-          sourceScope: "openclaw",
-          sourceProcess: settings.sourceProcess,
-          protocol: protocolFromUrl(captureUrl),
-          direction: "local",
-          kind: "error",
-          flowId: randomUUID(),
-          method:
-            (typeof Request !== "undefined" && input instanceof Request
-              ? input.method
-              : undefined) ??
-            normalizedInit?.method ??
-            "GET",
-          host: parsed.host,
-          path: `${parsed.pathname}${parsed.search}`,
-          errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
-          metaJson: redactedCaptureJson({ captureOrigin: "global-fetch" }, runtime.safeJsonString),
-        });
+      if (!suppressCapture && url && /^https?:/i.test(url)) {
+        recordHttpCaptureError(
+          {
+            url,
+            error,
+            method:
+              (typeof Request !== "undefined" && input instanceof Request
+                ? input.method
+                : undefined) ??
+              normalizedInit?.method ??
+              "GET",
+            meta: { captureOrigin: "global-fetch" },
+          },
+          settings,
+          deps,
+        );
       }
       throw error;
     }
@@ -431,16 +380,18 @@ export function finalizeDebugProxyCapture(
   runtime.closeStore();
 }
 
-export function captureHttpExchange(
+export function captureHttpExchangeInternal(
   params: {
     url: string;
     method: string;
-    requestHeaders?: Headers | Record<string, string> | undefined;
+    requestHeaders?: HeadersInit;
     requestBody?: BodyInit | Buffer | string | null;
     response: Response;
     transport?: "http" | "sse";
     flowId?: string;
     meta?: Record<string, unknown>;
+    sensitiveRequestHeaderNames?: Iterable<string>;
+    sensitiveValues?: Iterable<string>;
   },
   resolved?: DebugProxySettings,
   deps: DebugProxyCaptureRuntimeDeps = {},
@@ -452,26 +403,31 @@ export function captureHttpExchange(
   const runtime = resolveRuntimeDeps(deps);
   const store = runtime.getStore();
   const flowId = params.flowId ?? randomUUID();
-  const captureUrl = redactCaptureUrl(params.url);
+  const sensitiveValues = [...(params.sensitiveValues ?? [])];
+  const captureUrl = redactCaptureUrl(params.url, sensitiveValues);
   const url = new URL(captureUrl);
   const requestBody =
     typeof params.requestBody === "string" || Buffer.isBuffer(params.requestBody)
       ? params.requestBody
       : null;
-  const rawRequestContentType =
-    params.requestHeaders instanceof Headers
-      ? (params.requestHeaders.get("content-type") ?? undefined)
-      : params.requestHeaders?.["content-type"];
+  const normalizedRequestHeaders = params.requestHeaders
+    ? new Headers(normalizeHeadersInitForFetch(params.requestHeaders))
+    : undefined;
+  const rawRequestContentType = normalizedRequestHeaders?.get("content-type") ?? undefined;
   const requestContentType =
-    rawRequestContentType === undefined ? undefined : redactCaptureText(rawRequestContentType);
+    rawRequestContentType === undefined
+      ? undefined
+      : redactCaptureText(rawRequestContentType, sensitiveValues);
   const rawResponseContentType =
     typeof params.response.headers?.get === "function"
       ? (params.response.headers.get("content-type") ?? undefined)
       : undefined;
   const responseContentType =
-    rawResponseContentType === undefined ? undefined : redactCaptureText(rawResponseContentType);
+    rawResponseContentType === undefined
+      ? undefined
+      : redactCaptureText(rawResponseContentType, sensitiveValues);
   const requestPayload = runtime.persistEventPayload(store, {
-    data: redactCapturePayload(requestBody),
+    data: redactCapturePayload(requestBody, sensitiveValues),
     contentType: requestContentType,
   });
   store.recordEvent({
@@ -486,8 +442,14 @@ export function captureHttpExchange(
       method: params.method,
     }),
     contentType: requestContentType,
-    headersJson: runtime.safeJsonString(redactedCaptureHeaders(params.requestHeaders)),
-    metaJson: redactedCaptureJson(params.meta, runtime.safeJsonString),
+    headersJson: runtime.safeJsonString(
+      redactedCaptureHeaders(
+        normalizedRequestHeaders,
+        params.sensitiveRequestHeaderNames,
+        sensitiveValues,
+      ),
+    ),
+    metaJson: redactedCaptureJson(params.meta, runtime.safeJsonString, sensitiveValues),
     ...requestPayload,
   });
   // Records the response status/headers without a body. Used both when a
@@ -509,9 +471,15 @@ export function captureHttpExchange(
       contentType: responseContentType,
       headersJson:
         params.response.headers && typeof params.response.headers.entries === "function"
-          ? runtime.safeJsonString(redactedCaptureHeaders(params.response.headers))
+          ? runtime.safeJsonString(
+              redactedCaptureHeaders(params.response.headers, undefined, sensitiveValues),
+            )
           : undefined,
-      metaJson: redactedCaptureJson({ ...params.meta, bodyCapture }, runtime.safeJsonString),
+      metaJson: redactedCaptureJson(
+        { ...params.meta, bodyCapture },
+        runtime.safeJsonString,
+        sensitiveValues,
+      ),
     });
   };
   if (typeof params.response.clone !== "function") {
@@ -541,7 +509,7 @@ export function captureHttpExchange(
         return;
       }
       const responsePayload = runtime.persistEventPayload(store, {
-        data: redactCapturePayload(result.buffer),
+        data: redactCapturePayload(result.buffer, sensitiveValues),
         contentType: responseContentType,
       });
       store.recordEvent({
@@ -557,8 +525,10 @@ export function captureHttpExchange(
         }),
         status: params.response.status,
         contentType: responseContentType,
-        headersJson: runtime.safeJsonString(redactedCaptureHeaders(params.response.headers)),
-        metaJson: redactedCaptureJson(params.meta, runtime.safeJsonString),
+        headersJson: runtime.safeJsonString(
+          redactedCaptureHeaders(params.response.headers, undefined, sensitiveValues),
+        ),
+        metaJson: redactedCaptureJson(params.meta, runtime.safeJsonString, sensitiveValues),
         ...responsePayload,
       });
     })
@@ -574,9 +544,51 @@ export function captureHttpExchange(
           flowId,
           method: params.method,
         }),
-        errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
+        errorText: redactCaptureText(
+          error instanceof Error ? error.message : String(error),
+          sensitiveValues,
+        ),
       });
     });
+}
+
+/** Records an HTTP exchange through the stable public plugin capture contract. */
+export function captureHttpExchange(
+  params: {
+    url: string;
+    method: string;
+    requestHeaders?: Headers | Record<string, string> | undefined;
+    requestBody?: BodyInit | Buffer | string | null;
+    response: Response;
+    transport?: "http" | "sse";
+    flowId?: string;
+    meta?: Record<string, unknown>;
+  },
+  resolved?: DebugProxySettings,
+  deps: DebugProxyCaptureRuntimeDeps = {},
+): void {
+  captureHttpExchangeInternal(params, resolved, deps);
+}
+
+/** Records a failed HTTP transport with caller-specific redaction metadata. */
+export function captureHttpError(
+  params: {
+    url: string;
+    method: string;
+    error: unknown;
+    transport?: "http" | "sse";
+    flowId?: string;
+    meta?: Record<string, unknown>;
+    sensitiveValues?: Iterable<string>;
+  },
+  resolved?: DebugProxySettings,
+  deps: DebugProxyCaptureRuntimeDeps = {},
+): void {
+  const settings = resolved ?? resolveDebugProxySettings();
+  if (!settings.enabled) {
+    return;
+  }
+  recordHttpCaptureError(params, settings, deps);
 }
 
 // Websocket seams call this directly because Node fetch patching cannot observe

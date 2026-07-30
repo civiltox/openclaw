@@ -10233,6 +10233,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Supported parameters
   - H2: Model selection
   - H2: Base URL overrides
+  - H2: Custom request headers
   - H2: Related
 
 ## tools/goal.md

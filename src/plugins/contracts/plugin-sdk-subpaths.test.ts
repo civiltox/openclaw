@@ -1255,6 +1255,7 @@ describe("plugin-sdk subpath exports", () => {
       "normalizeBaseUrl",
       "postJsonRequest",
       "postTranscriptionRequest",
+      "redactOpaqueValuesInText",
       "requireTranscriptionText",
     ]);
     expectSourceOmits("speech", [

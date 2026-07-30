@@ -4,10 +4,13 @@ import { registerSecretValueForRedaction } from "../logging/secret-redaction-reg
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
 import type { DebugProxySettings } from "./env.js";
 import {
+  captureHttpError,
   captureHttpExchange,
+  captureHttpExchangeInternal,
   captureWsEvent,
   finalizeDebugProxyCapture,
   initializeDebugProxyCapture,
+  suppressDebugProxyGlobalFetchCaptureOnce,
   type DebugProxyCaptureRuntimeDeps,
 } from "./runtime.js";
 
@@ -122,6 +125,154 @@ describe("debug proxy runtime", () => {
     expect(sessionEvents.map((event) => event.kind)).toEqual(["request", "response"]);
   });
 
+  it("suppresses ambient capture once for an exact request init", async () => {
+    initializeDebugProxyCapture("test", settings, deps);
+    const init: RequestInit = {
+      headers: { "X-Routing-Target": "staging-private-route" },
+    };
+    suppressDebugProxyGlobalFetchCaptureOnce(init);
+
+    await fetchTarget.fetch("https://api.example.com/messages", init);
+    await fetchTarget.fetch("https://api.example.com/messages", init);
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    finalizeDebugProxyCapture(settings, deps);
+
+    const sessionEvents = events.filter((event) => event.sessionId === "runtime-test-session");
+    expect(sessionEvents.map((event) => event.kind)).toEqual(["request", "response"]);
+  });
+
+  it("keeps a suppressed ambient fetch rejection out of capture", async () => {
+    fetchTarget.fetch = async () => {
+      throw new Error("transport rejected staging-private-route");
+    };
+    initializeDebugProxyCapture("test", settings, deps);
+    const init: RequestInit = {
+      headers: { "X-Routing-Target": "staging-private-route" },
+    };
+    suppressDebugProxyGlobalFetchCaptureOnce(init);
+
+    await expect(fetchTarget.fetch("https://api.example.com/messages", init)).rejects.toThrow(
+      "transport rejected staging-private-route",
+    );
+    finalizeDebugProxyCapture(settings, deps);
+
+    expect(events).toEqual([]);
+  });
+
+  it("captures a request-specific transport failure with exact-value redaction", () => {
+    captureHttpError(
+      {
+        url: "https://api.example.com/staging-private-route",
+        method: "POST",
+        error: new Error("transport rejected staging-private-route"),
+        flowId: "routing-search",
+        sensitiveValues: ["staging-private-route"],
+        meta: {
+          captureOrigin: "guarded-fetch",
+          route: "staging-private-route",
+        },
+      },
+      settings,
+      deps,
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "error",
+      flowId: "routing-search",
+      errorText: "transport rejected [REDACTED]",
+      path: "/%5BREDACTED%5D",
+      metaJson: '{"captureOrigin":"guarded-fetch","route":"[REDACTED]"}',
+    });
+    expect(JSON.stringify(events[0])).not.toContain("staging-private-route");
+  });
+
+  it("suppresses ambiguous unstructured fields containing short routing values", () => {
+    captureHttpError(
+      {
+        url: "https://api.example.com/regions/us/status",
+        method: "GET",
+        error: new Error("request region us has usable status"),
+        sensitiveValues: ["us"],
+        meta: { region: "us", status: "usable" },
+      },
+      settings,
+      deps,
+    );
+
+    expect(events[0]).toMatchObject({
+      errorText: "[REDACTED]",
+      path: "/regions/%5BREDACTED%5D/%5BREDACTED%5D",
+      metaJson: '{"region":"[REDACTED]","[REDACTED]":"[REDACTED]"}',
+    });
+  });
+
+  it("redacts short routing values echoed by HTTP responses", async () => {
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.com/search",
+        method: "POST",
+        response: new Response('{"region":"us","status":"usable"}', {
+          status: 200,
+          headers: { "content-type": "application/json", "x-region": "us" },
+        }),
+        sensitiveValues: ["us"],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+
+    const response = events.find((event) => event.kind === "response");
+    expect(JSON.parse(String(response?.headersJson))).toStrictEqual({
+      "content-type": "application/json",
+      "x-region": "[REDACTED]",
+    });
+    expect(response?.dataText).toBe('{"region":"[REDACTED]","[REDACTED]":"[REDACTED]"}');
+  });
+
+  it("redacts routing values echoed as non-string JSON scalars", async () => {
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.com/search",
+        method: "POST",
+        response: new Response('{"route":12345,"enabled":true,"count":7}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        sensitiveValues: ["12345", "true"],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+
+    const response = events.find((event) => event.kind === "response");
+    expect(response?.dataText).toBe('{"route":"[REDACTED]","enabled":"[REDACTED]","count":7}');
+  });
+
+  it("redacts routing values echoed with form encoding", async () => {
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.com/search",
+        method: "POST",
+        response: new Response('{"route":"route+A%2Fsecret"}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        sensitiveValues: ["route A/secret"],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+
+    const response = events.find((event) => event.kind === "response");
+    expect(response?.dataText).toBe('{"route":"[REDACTED]"}');
+  });
+
   it("normalizes symbol-bearing request headers before calling patched fetch targets", async () => {
     fetchTarget.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
@@ -162,7 +313,7 @@ describe("debug proxy runtime", () => {
 
   it("redacts sensitive request and response headers before persistence", async () => {
     initializeDebugProxyCapture("test", settings, deps);
-    captureHttpExchange(
+    captureHttpExchangeInternal(
       {
         url: "https://discord.com/api/v10/gateway/bot",
         method: "GET",
@@ -171,13 +322,17 @@ describe("debug proxy runtime", () => {
           Cookie: "sid=session-token",
           "x-api-key": "provider-key",
           "content-type": "application/json",
+          "X-Routing-Target": "staging-private-route",
           "x-safe": "visible",
         },
-        response: new Response("{}", {
+        sensitiveRequestHeaderNames: ["x-routing-target"],
+        sensitiveValues: ["staging-private-route"],
+        response: new Response('{"route":"staging-private-route"}', {
           status: 200,
           headers: {
             "content-type": "application/json",
             "set-cookie": "sid=response-token",
+            "x-route-echo": "staging-private-route",
           },
         }),
       },
@@ -191,17 +346,46 @@ describe("debug proxy runtime", () => {
 
     const request = events.find((event) => event.kind === "request");
     expect(JSON.parse(String(request?.headersJson))).toStrictEqual({
-      Authorization: "[REDACTED]",
-      Cookie: "[REDACTED]",
+      authorization: "[REDACTED]",
+      cookie: "[REDACTED]",
       "x-api-key": "[REDACTED]",
       "content-type": "application/json",
+      "x-routing-target": "[REDACTED]",
       "x-safe": "visible",
     });
     const response = events.find((event) => event.kind === "response");
     expect(JSON.parse(String(response?.headersJson))).toStrictEqual({
       "content-type": "application/json",
       "set-cookie": "[REDACTED]",
+      "x-route-echo": "[REDACTED]",
     });
+    expect(response?.dataText).toBe('{"route":"[REDACTED]"}');
+  });
+
+  it("normalizes tuple-form request headers before redaction", async () => {
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.com/messages",
+        method: "POST",
+        requestHeaders: [
+          ["Accept", "application/json"],
+          ["X-Routing-Target", "staging-private-route"],
+        ],
+        response: new Response("{}", { status: 200 }),
+        sensitiveRequestHeaderNames: ["X-Routing-Target"],
+        sensitiveValues: ["staging-private-route"],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+
+    const request = events.find((event) => event.kind === "request");
+    expect(JSON.parse(String(request?.headersJson))).toStrictEqual({
+      accept: "application/json",
+      "x-routing-target": "[REDACTED]",
+    });
+    expect(JSON.stringify(events)).not.toContain("staging-private-route");
   });
 
   it("redacts registered exact values in custom headers and URL queries", async () => {
@@ -226,7 +410,7 @@ describe("debug proxy runtime", () => {
     const request = events.find((event) => event.kind === "request");
     expect(request?.path).toBe("/models/%5BREDACTED%5D?key=%5BREDACTED%5D");
     expect(JSON.parse(String(request?.headersJson))).toStrictEqual({
-      "X-Managed": "Bearer [REDACTED]",
+      "x-managed": "Bearer [REDACTED]",
     });
   });
 
@@ -295,6 +479,34 @@ describe("debug proxy runtime", () => {
 
     expect(events[0]?.dataText).toBe("[REDACTED BINARY PAYLOAD]");
     expect(events[0]?.dataText).not.toContain(secret);
+  });
+
+  it("omits non-UTF-8 HTTP response bytes when caller-specific values are sensitive", async () => {
+    const secret = "binary-http-capture-secret";
+    const body = Buffer.concat([
+      Buffer.from([0xff, 0x00]),
+      Buffer.from(secret, "utf8"),
+      Buffer.from([0xfe]),
+    ]);
+
+    captureHttpExchangeInternal(
+      {
+        url: "https://api.example.test/v1/search",
+        method: "POST",
+        response: new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+        }),
+        sensitiveValues: [secret],
+      },
+      settings,
+      deps,
+    );
+    await waitForResponseSettled();
+
+    const response = events.find((event) => event.kind === "response");
+    expect(response?.dataText).toBe("[REDACTED BINARY PAYLOAD]");
+    expect(response?.dataText).not.toContain(secret);
   });
 
   it("redacts registered values from HTTP payloads and metadata", async () => {

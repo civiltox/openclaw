@@ -734,7 +734,11 @@
     "webSearch.headers": {
       "label": "Gemini Search Headers",
       "help": "Optional non-secret headers merged into Gemini web search requests, for gateways that need routing metadata. Not a credential store: use webSearch.apiKey for credentials.",
-      "sensitive": true
+      "advanced": true
+    },
+    "webSearch.headers.*": {
+      "sensitive": true,
+      "advanced": true
     }
   },
   "contracts": {
@@ -783,9 +787,7 @@
           },
           "headers": {
             "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "additionalProperties": true
           }
         }
       }

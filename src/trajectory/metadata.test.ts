@@ -136,6 +136,19 @@ describe("trajectory metadata", () => {
             apiKey: "super-secret",
           },
         },
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  headers: {
+                    "X-Routing-Target": "staging-internal",
+                  },
+                },
+              },
+            },
+          },
+        },
       } as never,
       workspaceDir: "/tmp/workspace",
       sessionFile: "/tmp/workspace/session.jsonl",
@@ -173,11 +186,27 @@ describe("trajectory metadata", () => {
     });
 
     const config = metadata.config as {
-      redacted?: { providers?: { openai?: { apiKey?: string } } };
+      redacted?: {
+        providers?: { openai?: { apiKey?: string } };
+        plugins?: {
+          entries?: {
+            google?: {
+              config?: {
+                webSearch?: {
+                  headers?: Record<string, string>;
+                };
+              };
+            };
+          };
+        };
+      };
     };
     const plugins = metadata.plugins as { source?: string; entries?: Array<{ id: string }> };
     const skills = metadata.skills as { entries?: Array<{ id: string; filePath?: string }> };
     expect(config.redacted?.providers?.openai?.apiKey).toBe(REDACTED_SENTINEL);
+    expect(
+      config.redacted?.plugins?.entries?.google?.config?.webSearch?.headers?.["X-Routing-Target"],
+    ).toBe(REDACTED_SENTINEL);
     expect(plugins.source).toBe("active-registry");
     expect(plugins.entries?.map((entry) => entry.id)).toEqual(["demo-plugin"]);
     expect(skills.entries?.[0]?.id).toBe("weather");

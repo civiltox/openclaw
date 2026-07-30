@@ -155,26 +155,32 @@ is deliberately not forwarded: those headers are scoped to the provider's own
 else entirely, so forwarding them would send provider credentials to a different
 origin.
 
-**Entries dropped at request time**, each with a log line naming the header and the
-reason:
+**Invalid entries fail the current Gemini search before a request is sent.** The
+error names the offending header. Validation happens at search execution so one
+bad entry cannot disable unrelated Google plugin capabilities:
 
 - a name that is not a valid HTTP token, such as one containing a space;
-- a name reserved by the request contract (`Content-Type`, `x-goog-api-key`, and the
-  Google API client headers), or a framing or hop-by-hop name such as
-  `Content-Length`, `Transfer-Encoding`, `Connection`, and `Host`;
+- a name reserved by the request contract (`Content-Type`, `Sec-Fetch-Mode`,
+  `x-goog-api-key`, and the Google API client headers), or a framing, hop-by-hop,
+  or unsupported transport name such as `Content-Length`, `Transfer-Encoding`,
+  `Connection`, `Expect`, and `Host`; proxy authentication headers are also rejected
+  because they would be sent to the request origin rather than used to authenticate
+  a forward proxy;
 - a non-string or empty value;
 - a value still containing an unresolved `${VAR}` because the variable is unset;
-- a value with characters outside the HTTP field-value set, which covers control
-  bytes and anything above `U+00FF` such as a curly quote, em dash, or CJK text.
+- a value outside the HTTP field-value character set, including newline injection,
+  the `U+007F` DEL control character, and characters above `U+00FF` such as a curly
+  quote, em dash, or CJK text.
 
-Names are validated at request time rather than at config load on purpose: plugin
-config validation is fail-closed, so rejecting a header name at startup would
-disable every Google capability instead of just the offending header.
+Header entries are validated at request time rather than at config load on purpose:
+plugin config validation is fail-closed, so rejecting an entry at startup would
+disable every Google capability instead of just the offending search.
 
 Other behavior worth knowing:
 
 - Header names are compared case-insensitively, so two entries differing only in
-  case resolve to one value rather than being joined into `"a, b"`.
+  case resolve to one value rather than being joined into `"a, b"`; the later
+  declaration wins.
 - Headers apply only to the Gemini search request. Citation URLs are resolved with
   separate HEAD requests to third-party hosts, which never receive these headers.
 - Changing headers partitions the search cache, so a routing change does not serve

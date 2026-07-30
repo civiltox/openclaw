@@ -17,4 +17,47 @@ describe("web_search shared cache", () => {
       (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.web-search.cache")],
     ).toBeUndefined();
   });
+
+  it("forwards caller-specific redaction metadata to guarded fetch capture", async () => {
+    vi.resetModules();
+    const withTrustedWebToolsEndpoint = vi.fn(
+      async (
+        _params: unknown,
+        run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
+      ) =>
+        await run({
+          response: new Response("ok"),
+          finalUrl: "https://example.com",
+        }),
+    );
+    vi.doMock("./web-guarded-fetch.js", () => ({
+      withTrustedWebToolsEndpoint,
+      withSelfHostedWebToolsEndpoint: vi.fn(),
+    }));
+    const module = await import("./web-search-provider-common.js");
+
+    await module.withTrustedWebSearchEndpoint(
+      {
+        url: "https://example.com",
+        timeoutSeconds: 10,
+        init: {},
+        capture: {
+          sensitiveRequestHeaderNames: ["X-Routing-Target"],
+          sensitiveValues: ["staging-private-route"],
+        },
+      },
+      async () => undefined,
+    );
+
+    expect(withTrustedWebToolsEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capture: {
+          sensitiveRequestHeaderNames: ["X-Routing-Target"],
+          sensitiveValues: ["staging-private-route"],
+        },
+      }),
+      expect.any(Function),
+    );
+    vi.doUnmock("./web-guarded-fetch.js");
+  });
 });

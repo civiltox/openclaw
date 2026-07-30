@@ -389,6 +389,34 @@ describe("config io audit helpers", () => {
       expected: ["openclaw", "config", "set", "channels.slack.token", "***"],
     },
     {
+      name: "plugin header-map config set positional value",
+      argv: [
+        "openclaw",
+        "config",
+        "set",
+        "plugins.entries.google.config.webSearch.headers",
+        '{"Authorization":"Bearer gateway-secret"}',
+      ],
+      expected: [
+        "openclaw",
+        "config",
+        "set",
+        "plugins.entries.google.config.webSearch.headers",
+        "***",
+      ],
+    },
+    {
+      name: "model-provider header-map config set positional value",
+      argv: [
+        "openclaw",
+        "config",
+        "set",
+        "models.providers.openai.request.headers",
+        '{"X-Tenant":"private-route"}',
+      ],
+      expected: ["openclaw", "config", "set", "models.providers.openai.request.headers", "***"],
+    },
+    {
       name: "sensitive config set value after boolean option",
       argv: ["openclaw", "config", "set", "--json", "channels.slack.token", '"secret-value"'],
       expected: ["openclaw", "config", "set", "--json", "channels.slack.token", "***"],

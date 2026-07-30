@@ -47,6 +47,40 @@ function isLocalServiceEnvValuePath(path: string): boolean {
   return lowerPath.includes("localservice.env.");
 }
 
+function resolveStructuralHeaderPath(path: string): {
+  matches: boolean;
+  container: boolean;
+} {
+  const segments = normalizeLowercaseStringOrEmpty(path).split(".");
+  const isPluginWebSearchHeader =
+    segments.length >= 6 &&
+    segments[0] === "plugins" &&
+    segments[1] === "entries" &&
+    segments[3] === "config" &&
+    segments[4] === "websearch" &&
+    segments[5] === "headers";
+  const isModelProviderHeader =
+    segments.length >= 4 &&
+    segments[0] === "models" &&
+    segments[1] === "providers" &&
+    (segments[3] === "headers" ||
+      (segments.length >= 5 && segments[3] === "request" && segments[4] === "headers"));
+  const matches = isPluginWebSearchHeader || isModelProviderHeader;
+  const container =
+    (isPluginWebSearchHeader && segments.length === 6) ||
+    (isModelProviderHeader &&
+      (segments.length === 4 || (segments[3] === "request" && segments.length === 5)));
+  return { matches, container };
+}
+
+/**
+ * Returns true for a header-map object whose values are sensitive but whose keys
+ * should remain visible in config presentation surfaces.
+ */
+export function isSensitiveHeaderContainerPath(path: string): boolean {
+  return resolveStructuralHeaderPath(path).container;
+}
+
 /**
  * Classifies config paths whose values should be redacted from UI/API output.
  *
@@ -57,6 +91,8 @@ export function isSensitiveConfigPath(path: string): boolean {
   return (
     // Every local service env value is sensitive, even innocuous-looking names.
     isLocalServiceEnvValuePath(path) ||
+    // Known request-header maps carry routing metadata or credentials under arbitrary names.
+    resolveStructuralHeaderPath(path).matches ||
     (!isWhitelistedSensitivePath(path) && matchesSensitivePattern(path))
   );
 }

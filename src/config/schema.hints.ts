@@ -9,7 +9,7 @@ import { FIELD_HELP } from "./schema.help.js";
 import { FIELD_LABELS } from "./schema.labels.js";
 import { applyDerivedTags } from "./schema.tags.js";
 import { applyConfigTierHints } from "./schema.tiers.js";
-import { isSensitiveConfigPath } from "./sensitive-paths.js";
+import { isSensitiveConfigPath, isSensitiveHeaderContainerPath } from "./sensitive-paths.js";
 import { sensitive } from "./zod-schema.sensitive.js";
 
 export type { ConfigUiHint, ConfigUiHints } from "../shared/config-ui-hints-types.js";
@@ -167,7 +167,7 @@ export function applySensitiveHints(
     if (current?.sensitive !== undefined) {
       continue;
     }
-    if (isSensitiveConfigPath(key)) {
+    if (isSensitiveConfigPath(key) && !isSensitiveHeaderContainerPath(key)) {
       next[key] = { ...current, sensitive: true };
     }
   }

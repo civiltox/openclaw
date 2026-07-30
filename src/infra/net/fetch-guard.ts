@@ -14,6 +14,11 @@ import {
   shouldResolveConfiguredLocalOriginManagedProxyBypass,
   type ConfiguredLocalOriginManagedProxyBypass,
 } from "./configured-local-origin-bypass.js";
+import {
+  captureGuardedFetchError,
+  captureGuardedFetchExchange,
+  type GuardedFetchCaptureOptions,
+} from "./fetch-guard-capture.js";
 import { shouldUseEnvHttpProxyForUrl } from "./proxy-env.js";
 import { retainSafeHeadersForCrossOriginRedirect as retainSafeRedirectHeaders } from "./redirect-headers.js";
 import {
@@ -66,12 +71,7 @@ export type GuardedFetchOptions = {
   url: string;
   fetchImpl?: FetchLike;
   init?: RequestInit;
-  capture?:
-    | false
-    | {
-        flowId?: string;
-        meta?: Record<string, unknown>;
-      };
+  capture?: false | GuardedFetchCaptureOptions;
   maxRedirects?: number;
   /**
    * Allow replaying unsafe request methods and bodies across cross-origin redirects.
@@ -86,6 +86,11 @@ export type GuardedFetchOptions = {
   lookupFn?: LookupFn;
   dispatcherPolicy?: PinnedDispatcherPolicy;
   retainAuthorizationRedirectHostnameAllowlist?: string[];
+  /**
+   * Header names that must be removed when a redirect crosses origins, even when
+   * the generic redirect policy would otherwise consider them safe to replay.
+   */
+  stripHeadersOnCrossOriginRedirect?: string[];
   mode?: GuardedFetchMode;
   pinDns?: boolean;
   /** @deprecated use `mode: "trusted_env_proxy"` for trusted/operator-controlled URLs. */
@@ -314,46 +319,25 @@ export function retainSafeHeadersForCrossOriginRedirectHeaders(
   return retainSafeRedirectHeaders(headers);
 }
 
-async function captureGuardedFetchExchange(params: {
-  url: string;
-  method: string;
-  requestHeaders?: Headers | Record<string, string> | undefined;
-  requestBody?: BodyInit | Buffer | string | null;
-  response: Response;
-  transport?: "http" | "sse";
-  capture: GuardedFetchOptions["capture"];
-  auditContext?: string;
-  capturedByGlobalFetchPatch?: boolean;
-}): Promise<void> {
-  if (params.capture === false || !isTruthyEnvValue(process.env[OPENCLAW_DEBUG_PROXY_ENABLED])) {
-    return;
-  }
-  const { captureHttpExchange, isDebugProxyGlobalFetchPatchInstalled } =
-    await import("../../proxy-capture/runtime.js");
-  if (params.capturedByGlobalFetchPatch && isDebugProxyGlobalFetchPatchInstalled()) {
-    return;
-  }
-  captureHttpExchange({
-    url: params.url,
-    method: params.method,
-    requestHeaders: params.requestHeaders,
-    requestBody: params.requestBody,
-    response: params.response,
-    transport: params.transport,
-    flowId: params.capture?.flowId,
-    meta: {
-      captureOrigin: "guarded-fetch",
-      ...(params.auditContext ? { auditContext: params.auditContext } : {}),
-      ...params.capture?.meta,
-    },
-  });
-}
-
 function retainSafeHeadersForCrossOriginRedirect(init?: RequestInit): RequestInit | undefined {
   if (!init?.headers) {
     return init;
   }
   return { ...init, headers: retainSafeRedirectHeaders(init.headers) };
+}
+
+function stripSelectedHeadersForCrossOriginRedirect(
+  init: RequestInit | undefined,
+  names: string[] | undefined,
+): RequestInit | undefined {
+  if (!init?.headers || !names?.length) {
+    return init;
+  }
+  const headers = new Headers(normalizeHeadersInitForFetch(init.headers));
+  for (const name of names) {
+    headers.delete(name);
+  }
+  return { ...init, headers };
 }
 
 function resolveRetainedAuthorizationForRedirect(params: {
@@ -639,11 +623,44 @@ async function fetchWithSsrFGuardInternal(
       // because the default global fetch path will not honor per-request
       // dispatchers.
       const shouldUseRuntimeFetch = Boolean(dispatcher) && !supportsDispatcherInit;
-      const response = shouldUseRuntimeFetch
-        ? await fetchWithRuntimeDispatcher(parsedUrl.toString(), init)
-        : await defaultFetch(parsedUrl.toString(), init);
+      const shouldCaptureWithRequestSpecificRedaction =
+        !shouldUseRuntimeFetch &&
+        Boolean(
+          params.capture &&
+          (params.capture.sensitiveRequestHeaderNames?.length ||
+            params.capture.sensitiveValues?.length),
+        ) &&
+        isTruthyEnvValue(process.env[OPENCLAW_DEBUG_PROXY_ENABLED]) &&
+        isAmbientGlobalFetch({
+          fetchImpl: defaultFetch,
+          globalFetch: globalThis.fetch,
+        });
+      if (shouldCaptureWithRequestSpecificRedaction) {
+        const { suppressDebugProxyGlobalFetchCaptureOnce } =
+          await import("../../proxy-capture/runtime.js");
+        suppressDebugProxyGlobalFetchCaptureOnce(init);
+      }
+      let response: Response;
+      try {
+        response = shouldUseRuntimeFetch
+          ? await fetchWithRuntimeDispatcher(parsedUrl.toString(), init)
+          : await defaultFetch(parsedUrl.toString(), init);
+      } catch (error) {
+        if (shouldCaptureWithRequestSpecificRedaction) {
+          await captureGuardedFetchError({
+            url: parsedUrl.toString(),
+            method: currentInit?.method ?? "GET",
+            error,
+            transport: "http",
+            capture: params.capture,
+            auditContext: params.auditContext,
+          });
+        }
+        throw error;
+      }
       const capturedByGlobalFetchPatch =
         !shouldUseRuntimeFetch &&
+        !shouldCaptureWithRequestSpecificRedaction &&
         isAmbientGlobalFetch({
           fetchImpl: defaultFetch,
           globalFetch: globalThis.fetch,
@@ -652,7 +669,7 @@ async function fetchWithSsrFGuardInternal(
       await captureGuardedFetchExchange({
         url: parsedUrl.toString(),
         method: currentInit?.method ?? "GET",
-        requestHeaders: currentInit?.headers as Headers | Record<string, string> | undefined,
+        requestHeaders: currentInit?.headers,
         requestBody:
           (currentInit as (RequestInit & { body?: BodyInit | null }) | undefined)?.body ?? null,
         response,
@@ -691,6 +708,10 @@ async function fetchWithSsrFGuardInternal(
             init: currentInit,
             authorization: retainedAuthorization,
           });
+          currentInit = stripSelectedHeadersForCrossOriginRedirect(
+            currentInit,
+            params.stripHeadersOnCrossOriginRedirect,
+          );
         }
         const nextVisitKey = getRedirectVisitKey(nextUrl, currentInit);
         if (visited.has(nextVisitKey)) {

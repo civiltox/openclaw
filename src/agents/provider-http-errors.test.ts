@@ -304,6 +304,158 @@ describe("provider error utils", () => {
     expect(providerError.errorBody).not.toContain("sk-secret1234567890abcd");
   });
 
+  it("redacts caller-provided opaque values before provider error parsing", async () => {
+    const secret = 'Bearer tenant-token-"example"';
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          message: `Gateway rejected ${secret}`,
+        },
+      }),
+      { status: 401 },
+    );
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: [secret],
+    })) as ProviderHttpError;
+
+    expect(error.message).toContain("Gateway rejected ***");
+    expect(error.message).not.toContain("tenant-token");
+    expect(error.errorBody).not.toContain("tenant-token");
+  });
+
+  it("redacts caller-provided opaque values from plain-text provider errors", async () => {
+    const secret = "tenant-routing-token";
+    const response = new Response(`Gateway rejected ${secret}`, {
+      status: 502,
+      headers: { "content-type": "text/plain" },
+    });
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: [secret],
+    })) as ProviderHttpError;
+
+    expect(error.message).toBe("Provider API error (502): Gateway rejected ***");
+    expect(error.errorBody).toBe("Gateway rejected ***");
+  });
+
+  it("redacts caller-provided opaque values echoed with form encoding", async () => {
+    const secret = "route A/secret";
+    const response = new Response("Gateway rejected route+A%2Fsecret", {
+      status: 502,
+      headers: { "content-type": "text/plain" },
+    });
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: [secret],
+    })) as ProviderHttpError;
+
+    expect(error.message).toBe("Provider API error (502): Gateway rejected ***");
+    expect(error.errorBody).toBe("Gateway rejected ***");
+  });
+
+  it("redacts caller-provided opaque values echoed as provider request ids", async () => {
+    const secret = "us";
+    const response = new Response("Gateway rejected request", {
+      status: 502,
+      headers: { "x-request-id": secret },
+    });
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: [secret],
+    })) as ProviderHttpError;
+
+    expect(error.message).toBe(
+      "Provider API error (502): Gateway rejected request [request_id=***]",
+    );
+    expect(error.requestId).toBe("***");
+    expect(error.message).not.toContain(`[request_id=${secret}]`);
+  });
+
+  it.each([
+    {
+      opaqueValue: "message",
+      expectedDetail: "Gateway rejected value ***",
+      expectedMessageKey: "***",
+    },
+    { opaqueValue: ":", expectedDetail: "***", expectedMessageKey: "message" },
+  ])(
+    "redacts an echoed opaque value without corrupting JSON syntax: %s",
+    async ({ opaqueValue, expectedDetail, expectedMessageKey }) => {
+      const response = new Response(
+        JSON.stringify({
+          error: {
+            message: `Gateway rejected value ${opaqueValue}`,
+            code: "quota",
+          },
+        }),
+        { status: 429 },
+      );
+
+      const error = (await createProviderHttpError(response, "Provider API error", {
+        redactValues: [opaqueValue],
+      })) as ProviderHttpError;
+
+      expect(error.message).toBe(`Provider API error (429): ${expectedDetail} [code=quota]`);
+      expect(error.code).toBe("quota");
+      expect(JSON.parse(error.errorBody ?? "{}")).toStrictEqual({
+        error: {
+          [expectedMessageKey]: expectedDetail,
+          code: "quota",
+        },
+      });
+    },
+  );
+
+  it("redacts caller-provided opaque values used as provider error property names", async () => {
+    const secret = "tenant-route";
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          message: "Gateway rejected request",
+          [secret]: "echoed",
+        },
+      }),
+      { status: 502 },
+    );
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: [secret],
+    })) as ProviderHttpError;
+
+    expect(error.message).toBe("Provider API error (502): Gateway rejected request");
+    expect(error.errorBody).not.toContain(secret);
+    expect(JSON.parse(error.errorBody ?? "{}")).toStrictEqual({
+      error: { message: "Gateway rejected request", "***": "echoed" },
+    });
+  });
+
+  it("redacts caller-provided opaque values echoed as non-string error fields", async () => {
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          message: "Gateway rejected request",
+          route: 12345,
+          enabled: true,
+        },
+      }),
+      { status: 502 },
+    );
+
+    const error = (await createProviderHttpError(response, "Provider API error", {
+      redactValues: ["12345", "true"],
+    })) as ProviderHttpError;
+
+    expect(error.message).toBe("Provider API error (502): Gateway rejected request");
+    expect(JSON.parse(error.errorBody ?? "{}")).toStrictEqual({
+      error: {
+        message: "Gateway rejected request",
+        route: "***",
+        enabled: "***",
+      },
+    });
+  });
+
   it("keeps legacy HTTP status formatting while sharing provider parsing", async () => {
     const response = new Response(
       JSON.stringify({

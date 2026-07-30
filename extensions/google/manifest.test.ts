@@ -21,6 +21,7 @@ type GoogleManifest = {
     }>;
   };
   configSchema?: JsonSchemaObject;
+  uiHints?: Record<string, { advanced?: boolean; sensitive?: boolean }>;
 };
 
 const RETIRED_GEMINI_CHAT_MODELS = [
@@ -132,18 +133,19 @@ describe("google manifest webSearch config schema", () => {
     );
   });
 
-  it("rejects non-string header values", () => {
-    expect(validateWebSearchConfig({ headers: { "X-Retry-Count": 3 } }).success).toBe(false);
-    // Secret refs are intentionally unsupported: this path is not a registered
-    // secret target, so a ref could never resolve at request time.
+  it("defers invalid header entries to the search boundary", () => {
+    expect(validateWebSearchConfig({ headers: { "X-Retry-Count": 3 } }).success).toBe(true);
     expect(
       validateWebSearchConfig({ headers: { "X-Token": { source: "env", id: "T" } } }).success,
-    ).toBe(false);
+    ).toBe(true);
+    expect(validateWebSearchConfig({ headers: { "X Route": "staging" } }).success).toBe(true);
   });
 
-  it("accepts malformed header names so a typo cannot disable the whole plugin", () => {
-    // Plugin config validation is fail-closed at load, so name validation belongs at
-    // request time where only the bad header is dropped.
-    expect(validateWebSearchConfig({ headers: { "X Route": "staging" } }).success).toBe(true);
+  it("keeps operator header maps out of the scalar wizard and redacts only values", () => {
+    const hints = loadManifest().uiHints;
+    expect(hints?.["webSearch.headers"]?.sensitive).not.toBe(true);
+    expect(hints?.["webSearch.headers"]?.advanced).toBe(true);
+    expect(hints?.["webSearch.headers.*"]?.sensitive).toBe(true);
+    expect(hints?.["webSearch.headers.*"]?.advanced).toBe(true);
   });
 });

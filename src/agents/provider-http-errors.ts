@@ -4,6 +4,10 @@
  * Transport adapters use this module to turn provider-specific response bodies,
  * request ids, and binary payload guardrails into stable OpenClaw error shapes.
  */
+import {
+  redactOpaqueValuesInJson,
+  redactOpaqueValuesInText,
+} from "@openclaw/normalization-core/opaque-value-redaction";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 export { asFiniteNumber } from "../../packages/normalization-core/src/number-coercion.js";
 import { normalizeOptionalString as trimToUndefined } from "../../packages/normalization-core/src/string-coerce.js";
@@ -31,6 +35,7 @@ type ProviderHttpErrorOptions = {
   statusPrefix?: string;
   bodyTimeoutMs?: ReadResponseTextPrefixOptions["timeoutMs"];
   onBodyTimeout?: NonNullable<ReadResponseTextPrefixOptions["onTimeout"]>;
+  redactValues?: readonly string[];
 };
 
 class ProviderErrorBodyTimeout extends Error {
@@ -58,8 +63,35 @@ export function truncateErrorDetail(detail: string, limit = 220): string {
 }
 
 /** Redacts secrets before preserving a bounded provider error body preview. */
-function redactProviderErrorBody(body: string): string {
-  return truncateErrorDetail(redactSensitiveText(body), ERROR_BODY_METADATA_LIMIT);
+function redactExactProviderErrorValues(
+  body: string,
+  values: readonly string[] | undefined,
+): string {
+  return redactOpaqueValuesInText(body, values, "***");
+}
+
+function redactProviderErrorBody(body: string, values?: readonly string[]): string {
+  return truncateErrorDetail(
+    redactSensitiveText(redactExactProviderErrorValues(body, values)),
+    ERROR_BODY_METADATA_LIMIT,
+  );
+}
+
+function redactProviderErrorMetadata(
+  value: string | undefined,
+  values: readonly string[] | undefined,
+): string | undefined {
+  return value === undefined
+    ? undefined
+    : redactSensitiveText(redactExactProviderErrorValues(value, values));
+}
+
+function redactProviderErrorPayloadStringValues(
+  value: unknown,
+  values: readonly string[] | undefined,
+  options?: { redactKeys?: boolean },
+): unknown {
+  return redactOpaqueValuesInJson(value, values, "***", options);
 }
 
 /** Reads at most `limitBytes` from a response body without buffering provider-sized failures. */
@@ -205,21 +237,38 @@ async function extractProviderErrorInfo(
       return "";
     }),
   );
-  const requestId = extractProviderRequestId(response);
+  const requestId = redactProviderErrorMetadata(
+    extractProviderRequestId(response),
+    options?.redactValues,
+  );
   if (!rawBody) {
     return requestId ? { requestId } : {};
   }
-  const body = redactProviderErrorBody(rawBody);
   try {
-    const metadata = extractProviderErrorPayloadMetadata(JSON.parse(rawBody));
+    const parsedPayload = JSON.parse(rawBody);
+    const metadataPayload = redactProviderErrorPayloadStringValues(
+      parsedPayload,
+      options?.redactValues,
+      { redactKeys: false },
+    );
+    const bodyPayload = redactProviderErrorPayloadStringValues(
+      parsedPayload,
+      options?.redactValues,
+    );
+    const body = redactProviderErrorBody(JSON.stringify(bodyPayload));
+    const metadata = extractProviderErrorPayloadMetadata(metadataPayload);
+    const detail = redactProviderErrorMetadata(metadata.detail, options?.redactValues);
+    const code = redactProviderErrorMetadata(metadata.code, options?.redactValues);
+    const type = redactProviderErrorMetadata(metadata.type, options?.redactValues);
     return {
-      ...(metadata.detail ? { detail: metadata.detail } : { detail: body }),
-      ...(metadata.code ? { code: metadata.code } : {}),
-      ...(metadata.type ? { type: metadata.type } : {}),
+      ...(detail ? { detail } : { detail: body }),
+      ...(code ? { code } : {}),
+      ...(type ? { type } : {}),
       body,
       ...(requestId ? { requestId } : {}),
     };
   } catch {
+    const body = redactProviderErrorBody(rawBody, options?.redactValues);
     return {
       detail: body,
       body,

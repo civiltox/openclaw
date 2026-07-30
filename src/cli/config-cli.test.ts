@@ -1277,6 +1277,36 @@ describe("config cli", () => {
       expect(mockWriteStdout).toHaveBeenCalledWith("__OPENCLAW_REDACTED__\n");
     });
 
+    it("redacts arbitrary values nested under plugin header maps", async () => {
+      const config = {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  headers: {
+                    "X-Routing-Target": "staging-internal",
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig;
+      setSnapshot(config, config);
+
+      await runConfigCommand([
+        "config",
+        "get",
+        "plugins.entries.google.config.webSearch.headers",
+        "--json",
+      ]);
+
+      expect(parseLastLogPayload()).toEqual({
+        "X-Routing-Target": "__OPENCLAW_REDACTED__",
+      });
+    });
+
     it("prints materialized subagent archive default", async () => {
       const resolved: OpenClawConfig = {};
       const config: OpenClawConfig = {

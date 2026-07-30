@@ -33,6 +33,19 @@ const { getDefaultAutoSelectFamily, isWSL2SyncMock } = vi.hoisted(() => ({
   isWSL2SyncMock: vi.fn(() => false),
 }));
 const logWarnMock = vi.hoisted(() => vi.fn());
+const proxyCaptureMocks = vi.hoisted(() => {
+  const suppressedInits = new WeakSet<RequestInit>();
+  return {
+    captureHttpExchange: vi.fn(),
+    captureHttpError: vi.fn(),
+    isDebugProxyGlobalFetchPatchInstalled: vi.fn(() => true),
+    suppressDebugProxyGlobalFetchCaptureOnce: vi.fn((init: RequestInit) => {
+      suppressedInits.add(init);
+    }),
+    takeSuppressedInit: (init: RequestInit | undefined) =>
+      init ? suppressedInits.delete(init) : false,
+  };
+});
 
 vi.mock("node:net", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:net")>()),
@@ -50,6 +63,15 @@ vi.mock("../../logger.js", async () => {
     logWarn: logWarnMock,
   };
 });
+
+vi.mock("../../proxy-capture/runtime.js", () => ({
+  captureHttpExchange: proxyCaptureMocks.captureHttpExchange,
+  captureHttpExchangeInternal: proxyCaptureMocks.captureHttpExchange,
+  captureHttpError: proxyCaptureMocks.captureHttpError,
+  isDebugProxyGlobalFetchPatchInstalled: proxyCaptureMocks.isDebugProxyGlobalFetchPatchInstalled,
+  suppressDebugProxyGlobalFetchCaptureOnce:
+    proxyCaptureMocks.suppressDebugProxyGlobalFetchCaptureOnce,
+}));
 
 function createPinnedDispatcherCompatibilityError(): Error {
   const cause = Object.assign(new Error("invalid onRequestStart method"), {
@@ -375,6 +397,10 @@ describe("fetchWithSsrFGuard hardening", () => {
   beforeEach(() => {
     getDefaultAutoSelectFamily.mockReturnValue(true);
     isWSL2SyncMock.mockReturnValue(false);
+    proxyCaptureMocks.captureHttpExchange.mockClear();
+    proxyCaptureMocks.captureHttpError.mockClear();
+    proxyCaptureMocks.isDebugProxyGlobalFetchPatchInstalled.mockClear();
+    proxyCaptureMocks.suppressDebugProxyGlobalFetchCaptureOnce.mockClear();
   });
 
   afterEach(() => {
@@ -387,6 +413,129 @@ describe("fetchWithSsrFGuard hardening", () => {
     logWarnMock.mockClear();
     resetGlobalUndiciStreamTimeoutsForTests();
     Reflect.deleteProperty(globalThis as object, TEST_UNDICI_RUNTIME_DEPS_KEY);
+  });
+
+  it("captures caller-selected sensitive headers through the ambient fetch patch exactly once", async () => {
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    const originalGlobalFetch = globalThis.fetch;
+    const globalFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!proxyCaptureMocks.takeSuppressedInit(init)) {
+        proxyCaptureMocks.captureHttpExchange({
+          url: String(input),
+          method: init?.method ?? "GET",
+          requestHeaders: init?.headers,
+          response: okResponse(),
+          meta: { captureOrigin: "global-fetch" },
+        });
+      }
+      return okResponse();
+    });
+    globalThis.fetch = globalFetch as typeof fetch;
+    try {
+      const result = await fetchWithSsrFGuard({
+        url: "https://api.example.com/search",
+        lookupFn: createPublicLookup(),
+        pinDns: false,
+        init: {
+          method: "POST",
+          headers: { "X-Routing-Target": "staging-private-route" },
+        },
+        capture: { sensitiveValues: ["staging-private-route"] },
+      });
+
+      expect(proxyCaptureMocks.suppressDebugProxyGlobalFetchCaptureOnce).toHaveBeenCalledTimes(1);
+      expect(proxyCaptureMocks.captureHttpExchange).toHaveBeenCalledTimes(1);
+      expect(proxyCaptureMocks.captureHttpExchange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sensitiveValues: ["staging-private-route"],
+          meta: expect.objectContaining({ captureOrigin: "guarded-fetch" }),
+        }),
+      );
+      await result.release();
+    } finally {
+      globalThis.fetch = originalGlobalFetch;
+    }
+  });
+
+  it("hands tuple-form request headers to request-specific capture unchanged", async () => {
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    const originalGlobalFetch = globalThis.fetch;
+    const globalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      proxyCaptureMocks.takeSuppressedInit(init);
+      return okResponse();
+    });
+    globalThis.fetch = globalFetch as typeof fetch;
+    const requestHeaders: [string, string][] = [
+      ["Accept", "application/json"],
+      ["X-Routing-Target", "staging-private-route"],
+    ];
+    try {
+      const result = await fetchWithSsrFGuard({
+        url: "https://api.example.com/search",
+        lookupFn: createPublicLookup(),
+        pinDns: false,
+        init: { headers: requestHeaders },
+        capture: {
+          sensitiveRequestHeaderNames: ["X-Routing-Target"],
+          sensitiveValues: ["staging-private-route"],
+        },
+      });
+
+      expect(proxyCaptureMocks.captureHttpExchange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestHeaders,
+          sensitiveRequestHeaderNames: ["X-Routing-Target"],
+          sensitiveValues: ["staging-private-route"],
+        }),
+      );
+      await result.release();
+    } finally {
+      globalThis.fetch = originalGlobalFetch;
+    }
+  });
+
+  it("captures a redacted transport failure after suppressing the ambient fetch patch", async () => {
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    const originalGlobalFetch = globalThis.fetch;
+    const globalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      proxyCaptureMocks.takeSuppressedInit(init);
+      throw new Error("transport rejected staging-private-route");
+    });
+    globalThis.fetch = globalFetch as typeof fetch;
+    try {
+      await expect(
+        fetchWithSsrFGuard({
+          url: "https://api.example.com/search",
+          lookupFn: createPublicLookup(),
+          pinDns: false,
+          init: {
+            method: "POST",
+            headers: { "X-Routing-Target": "staging-private-route" },
+          },
+          capture: {
+            flowId: "routing-search",
+            sensitiveValues: ["staging-private-route"],
+            meta: { provider: "gemini" },
+          },
+        }),
+      ).rejects.toThrow("transport rejected staging-private-route");
+
+      expect(proxyCaptureMocks.suppressDebugProxyGlobalFetchCaptureOnce).toHaveBeenCalledTimes(1);
+      expect(proxyCaptureMocks.captureHttpExchange).not.toHaveBeenCalled();
+      expect(proxyCaptureMocks.captureHttpError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.any(Error),
+          flowId: "routing-search",
+          sensitiveValues: ["staging-private-route"],
+          meta: expect.objectContaining({
+            captureOrigin: "guarded-fetch",
+            provider: "gemini",
+          }),
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalGlobalFetch;
+    }
   });
 
   it("blocks private and legacy loopback literals before fetch", async () => {
@@ -1036,6 +1185,63 @@ describe("fetchWithSsrFGuard hardening", () => {
     for (const [header, value] of CROSS_ORIGIN_REDIRECT_PRESERVED_HEADERS) {
       expect(headers.get(header)).toBe(value);
     }
+    await result.release();
+  });
+
+  it("strips caller-selected safe headers when redirect crosses origins", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirectResponse("https://cdn.example.com/asset"))
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await fetchWithSsrFGuard({
+      url: "https://api.example.com/start",
+      fetchImpl,
+      lookupFn: createPublicLookup(),
+      init: {
+        headers: {
+          Accept: "application/json",
+          "Accept-Language": "en-AU",
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+          "User-Agent": "OpenClaw-Test/1.0",
+        },
+      },
+      retainAuthorizationRedirectHostnameAllowlist: ["cdn.example.com"],
+      stripHeadersOnCrossOriginRedirect: ["Accept-Language", "Authorization", "User-Agent"],
+    });
+
+    const headers = getSecondRequestHeaders(fetchImpl);
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("accept-language")).toBeNull();
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("user-agent")).toBeNull();
+    await result.release();
+  });
+
+  it("preserves caller-selected headers when a redirect stays on the same origin", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirectResponse("https://api.example.com/next"))
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await fetchWithSsrFGuard({
+      url: "https://api.example.com/start",
+      fetchImpl,
+      lookupFn: createPublicLookup(),
+      init: {
+        headers: {
+          "Accept-Language": "en-AU",
+          "X-Routing-Target": "staging",
+        },
+      },
+      stripHeadersOnCrossOriginRedirect: ["Accept-Language", "X-Routing-Target"],
+    });
+
+    const headers = getSecondRequestHeaders(fetchImpl);
+    expect(headers.get("accept-language")).toBe("en-AU");
+    expect(headers.get("x-routing-target")).toBe("staging");
     await result.release();
   });
 

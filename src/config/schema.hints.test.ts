@@ -86,6 +86,16 @@ describe("isSensitiveConfigPath", () => {
     expect(isSensitiveConfigPath("channels.feishu.encryptKey")).toBe(true);
     expect(isSensitiveConfigPath("models.providers.local.localService.env.HF_HOME")).toBe(true);
     expect(isSensitiveConfigPath("models.providers.local.localService.env.MAX_TOKENS")).toBe(true);
+    expect(
+      isSensitiveConfigPath("plugins.entries.google.config.webSearch.headers.X-Routing-Target"),
+    ).toBe(true);
+    expect(isSensitiveConfigPath("models.providers.openai.headers.Authorization")).toBe(true);
+    expect(isSensitiveConfigPath("models.providers.openai.request.headers.X-Tenant")).toBe(true);
+    expect(isSensitiveConfigPath("plugins.entries.google.config.webSearch.headers")).toBe(true);
+    expect(isSensitiveConfigPath("models.providers.openai.headers")).toBe(true);
+    expect(isSensitiveConfigPath("models.providers.openai.request.headers")).toBe(true);
+    expect(isSensitiveConfigPath("plugins.entries.headers.config.displayName")).toBe(false);
+    expect(isSensitiveConfigPath("channels.slack.accounts.headers.name")).toBe(false);
   });
 });
 

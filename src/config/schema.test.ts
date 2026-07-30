@@ -2,6 +2,7 @@ import { SENSITIVE_URL_HINT_TAG } from "@openclaw/net-policy/redact-sensitive-ur
 // Covers canonical config schema defaults, validation, and sensitive redaction.
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, describe, expect, it } from "vitest";
+import { REDACTED_SENTINEL, redactConfigObject } from "./redact-snapshot.js";
 import { buildConfigSchema, lookupConfigSchema } from "./schema.js";
 import { applyDerivedTags } from "./schema.tags.js";
 import { applyResolvedConfigTierHints } from "./schema.tiers.js";
@@ -498,6 +499,44 @@ describe("config schema", () => {
     const res = buildConfigSchema(tokenHintInput);
 
     expect(res.uiHints["plugins.entries.voice-call.config.tokens"]?.sensitive).toBe(false);
+  });
+
+  it("preserves header-map keys while redacting values in merged plugin hints", () => {
+    const res = buildConfigSchema({
+      plugins: [
+        {
+          id: "google",
+          configUiHints: {
+            "webSearch.headers": { advanced: true },
+            "webSearch.headers.*": { advanced: true, sensitive: true },
+          },
+        },
+      ],
+    });
+    const parentPath = "plugins.entries.google.config.webSearch.headers";
+    const valuePath = `${parentPath}.*`;
+    expect(res.uiHints[parentPath]?.sensitive).toBeUndefined();
+    expect(res.uiHints[valuePath]?.sensitive).toBe(true);
+
+    const redacted = redactConfigObject(
+      {
+        plugins: {
+          entries: {
+            google: {
+              config: {
+                webSearch: {
+                  headers: { "X-Routing-Target": "staging-internal" },
+                },
+              },
+            },
+          },
+        },
+      },
+      res.uiHints,
+    );
+    expect(redacted.plugins.entries.google.config.webSearch.headers).toEqual({
+      "X-Routing-Target": REDACTED_SENTINEL,
+    });
   });
 
   it("merges plugin + channel schemas", () => {

@@ -39,6 +39,30 @@ function createGoogleModelProviderConfig(
   };
 }
 
+function createGeminiToolWithHeaders(
+  headers: Record<string, unknown>,
+  baseUrl = "https://generativelanguage.googleapis.com/v1beta/",
+) {
+  return createGeminiWebSearchProvider().createTool({
+    config: {
+      plugins: {
+        entries: {
+          google: {
+            config: {
+              webSearch: {
+                apiKey: "AIza-plugin-test",
+                baseUrl,
+                headers,
+              },
+            },
+          },
+        },
+      },
+    },
+    searchConfig: { provider: "gemini" },
+  });
+}
+
 function requireFirstGeminiFetchCall(
   mockFetch: ReturnType<typeof installGeminiFetch>,
 ): [RequestInfo | URL | undefined, RequestInit | undefined] {
@@ -177,6 +201,7 @@ describe("google web search provider", () => {
                   apiKey: "AIza-plugin-test",
                   headers: {
                     "X-Routing-Target": "https://gateway.example.com/staging",
+                    "X-Latin1-Label": "caf\u00e9",
                   },
                 },
               },
@@ -192,91 +217,89 @@ describe("google web search provider", () => {
     expect(getFetchHeaders(mockFetch)["x-routing-target"]).toBe(
       "https://gateway.example.com/staging",
     );
+    expect(getFetchHeaders(mockFetch)["x-latin1-label"]).toBe("caf\u00e9");
   });
 
-  it("keeps provider-owned Gemini headers ahead of configured headers", async () => {
-    const mockFetch = installGeminiFetch();
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                  // Lower-case collisions must replace, not append; Headers would
-                  // otherwise emit "text/plain, application/json".
-                  headers: {
-                    "content-type": "text/plain",
-                    "x-goog-api-key": "AIza-header-override",
-                  },
-                },
-              },
-            },
+  it("drops every operator header when a Gemini redirect crosses origins", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: {
+            location: "https://generativelanguage.googleapis.com:8443/gemini",
           },
-        },
-      },
-      searchConfig: { provider: "gemini" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: { parts: [{ text: "Grounded answer" }] },
+                groundingMetadata: {},
+              },
+            ],
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", withFetchPreconnect(mockFetch));
+    const tool = createGeminiToolWithHeaders({
+      "Accept-Language": "en-AU",
+      "X-Routing-Target": "staging",
     });
 
-    await tool?.execute({ query: "OpenClaw provider header precedence" });
+    await tool?.execute({ query: "OpenClaw configured header redirect isolation" });
 
-    const headers = getFetchHeaders(mockFetch);
-    expect(headers["content-type"]).toBe("application/json");
-    expect(headers["x-goog-api-key"]).toBe("AIza-plugin-test");
+    const redirectedHeaders = readInitHeaders(mockFetch.mock.calls[1]?.[1]);
+    expect(redirectedHeaders["accept-language"]).toBeUndefined();
+    expect(redirectedHeaders["x-routing-target"]).toBeUndefined();
+    expect(redirectedHeaders["content-type"]).toBeUndefined();
+    expect(redirectedHeaders["x-goog-api-key"]).toBeUndefined();
   });
 
-  it("drops header values the request cannot carry", async () => {
+  it.each<[string, string]>([
+    ["content-type", "text/plain"],
+    ["sec-fetch-mode", "navigate"],
+    ["x-goog-api-key", "AIza-header-override"],
+    ["x-goog-api-client", "operator-client"],
+  ])("rejects provider-owned header %s on custom endpoints", async (name, value) => {
     const mockFetch = installGeminiFetch();
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                  headers: {
-                    // Header values are ByteStrings; code units above U+00FF throw
-                    // from the Headers constructor rather than being ignored.
-                    "X-Em-Dash": "staging—eu",
-                    "X-Cjk": "東京",
-                    "X-Injected": "value\r\nX-Smuggled: yes",
-                    // Env substitution preserves the placeholder when unset, so an
-                    // unresolved reference must not reach the wire.
-                    "X-Unresolved": "${GEMINI_ROUTING_TARGET_NOT_SET}",
-                    // Framing headers are valid tokens but break the request.
-                    "Transfer-Encoding": "chunked",
-                    "Content-Length": "0",
-                    "X-Kept": "staging",
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
+    const tool = createGeminiToolWithHeaders(
+      { [name]: value },
+      "https://gateway.example.com/gemini/v1beta/",
+    );
 
-    await tool?.execute({ query: "OpenClaw unusable header values" });
+    await expect(tool?.execute({ query: `OpenClaw reserved header ${name}` })).rejects.toThrow(
+      `invalid header ${JSON.stringify(name)}`,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
 
-    const headers = getFetchHeaders(mockFetch);
-    expect(headers["x-kept"]).toBe("staging");
-    for (const dropped of [
-      "x-em-dash",
-      "x-cjk",
-      "x-injected",
-      "x-smuggled",
-      "x-unresolved",
-      "transfer-encoding",
-    ]) {
-      expect(Object.keys(headers)).not.toContain(dropped);
-    }
-    // Without the framing denylist these would reach the wire and break the POST.
-    expect(headers["content-length"]).toBeUndefined();
+  it.each<[string, unknown]>([
+    ["X-Retry-Count", 3],
+    ["X-Token", { source: "env", id: "T" }],
+    ["X Route", "staging"],
+    [" X-Route ", "staging"],
+    ["X-Em-Dash", "staging—eu"],
+    ["X-Cjk", "東京"],
+    ["X-Injected", "value\r\nX-Smuggled: yes"],
+    ["X-Del", "value\u007fafter-del"],
+    ["X-Unresolved", "${GEMINI_ROUTING_TARGET_NOT_SET}"],
+    ["X-Empty", " \t "],
+    ["Transfer-Encoding", "chunked"],
+    ["Content-Length", "0"],
+    ["Expect", "100-continue"],
+    ["Proxy-Authenticate", "Basic realm=proxy"],
+    ["Proxy-Authorization", "Basic dXNlcjpwYXNz"],
+  ])("fails only the search boundary for invalid header %s", async (name, value) => {
+    const mockFetch = installGeminiFetch();
+    const tool = createGeminiToolWithHeaders({ [name]: value });
+
+    await expect(tool?.execute({ query: `OpenClaw invalid header ${name}` })).rejects.toThrow(
+      `invalid header ${JSON.stringify(name)}`,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("collapses operator header names that differ only by case", async () => {
@@ -347,33 +370,17 @@ describe("google web search provider", () => {
     expect(getFetchHeaders(mockFetch)["authorization"]).toBeUndefined();
   });
 
-  it("drops header names that are not valid HTTP tokens", async () => {
+  it("never forwards operator headers to citation HEAD requests", async () => {
     const mockFetch = installGeminiFetch();
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                  headers: { "X Route": "staging", "X-Route:": "staging", "X-Good": "kept" },
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
+    const tool = createGeminiToolWithHeaders({ "X-Routing-Target": "staging" });
 
-    await tool?.execute({ query: "OpenClaw malformed header names" });
+    await tool?.execute({ query: "OpenClaw citation header isolation" });
 
-    const headers = getFetchHeaders(mockFetch);
-    expect(headers["x-good"]).toBe("kept");
-    expect(Object.keys(headers)).not.toContain("x route");
-    expect(Object.keys(headers)).not.toContain("x-route:");
+    const citationCalls = mockFetch.mock.calls
+      .map((call) => call as [RequestInfo | URL | undefined, RequestInit | undefined])
+      .filter(([, init]) => init?.method === "HEAD");
+    expect(citationCalls).toHaveLength(1);
+    expect(readInitHeaders(citationCalls[0]?.[1])["x-routing-target"]).toBeUndefined();
   });
 
   it("partitions the Gemini search cache by configured headers", async () => {
@@ -405,6 +412,120 @@ describe("google web search provider", () => {
     const searchCallHeaders = getGeminiSearchCallHeaders(mockFetch);
     expect(searchCallHeaders).toHaveLength(2);
     expect(searchCallHeaders[1]?.["x-routing-target"]).toBe("https://gateway.example.com/canary");
+  });
+
+  it("validates changed headers before returning a cached Gemini result", async () => {
+    const mockFetch = installGeminiFetch();
+    const headers: Record<string, unknown> = { "X-Routing-Target": "staging" };
+    const tool = createGeminiToolWithHeaders(headers);
+    const query = "OpenClaw validate headers before cache";
+
+    await tool?.execute({ query });
+    headers["X Route"] = "invalid";
+
+    await expect(tool?.execute({ query })).rejects.toThrow('invalid header "X Route"');
+    expect(getGeminiSearchCallHeaders(mockFetch)).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      label: "non-2xx response",
+      response: new Response(
+        JSON.stringify({
+          error: {
+            message:
+              "gateway rejected Bearer gateway-token-example for https://gateway.example.com/staging",
+          },
+        }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      ),
+    },
+    {
+      label: "2xx error payload",
+      response: new Response(
+        JSON.stringify({
+          error: {
+            code: 401,
+            message:
+              "gateway rejected Bearer gateway-token-example for https://gateway.example.com/staging",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    },
+  ])("redacts operator header values from a Gemini $label", async ({ response }) => {
+    vi.stubGlobal("fetch", withFetchPreconnect(vi.fn(() => Promise.resolve(response))));
+    const tool = createGeminiToolWithHeaders({
+      Authorization: "Bearer gateway-token-example",
+      "X-Routing-Target": "https://gateway.example.com/staging",
+    });
+
+    const rejection = await tool
+      ?.execute({ query: "OpenClaw configured header error redaction" })
+      .catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(Error);
+    const message = (rejection as Error).message;
+    expect(message).toContain("gateway rejected *** for ***");
+    expect(message).not.toContain("gateway-token-example");
+    expect(message).not.toContain("gateway.example.com/staging");
+  });
+
+  it("redacts encoded operator header values from a Gemini 2xx error payload", async () => {
+    const headerValue = "route A/secret";
+    vi.stubGlobal(
+      "fetch",
+      withFetchPreconnect(
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  code: 400,
+                  message: `gateway rejected ${encodeURIComponent(headerValue)}`,
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            ),
+          ),
+        ),
+      ),
+    );
+    const tool = createGeminiToolWithHeaders({ "X-Routing-Target": headerValue });
+
+    const rejection = await tool
+      ?.execute({ query: "OpenClaw encoded configured header error redaction" })
+      .catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toContain("gateway rejected ***");
+    expect((rejection as Error).message).not.toContain(encodeURIComponent(headerValue));
+  });
+
+  it("suppresses ambiguous diagnostics that contain an embedded short routing value", async () => {
+    vi.stubGlobal(
+      "fetch",
+      withFetchPreconnect(
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  code: 400,
+                  message: "gateway rejected route=uswest",
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            ),
+          ),
+        ),
+      ),
+    );
+    const tool = createGeminiToolWithHeaders({ "X-Region": "us" });
+
+    await expect(
+      tool?.execute({ query: "OpenClaw short routing value diagnostics" }),
+    ).rejects.toThrow("Gemini API error (400): ***");
   });
 
   it("accepts Gemini success JSON with empty grounding metadata", async () => {

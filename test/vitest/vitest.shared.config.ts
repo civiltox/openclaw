@@ -459,6 +459,16 @@ export const sharedVitestConfig = {
         ),
       },
       {
+        find: "@openclaw/normalization-core/opaque-value-redaction",
+        replacement: path.join(
+          repoRoot,
+          "packages",
+          "normalization-core",
+          "src",
+          "opaque-value-redaction.ts",
+        ),
+      },
+      {
         find: "@openclaw/normalization-core/phone-presentation",
         replacement: path.join(
           repoRoot,

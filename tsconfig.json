@@ -155,6 +155,9 @@
       "@openclaw/normalization-core/number-coercion": [
         "./packages/normalization-core/src/number-coercion.ts"
       ],
+      "@openclaw/normalization-core/opaque-value-redaction": [
+        "./packages/normalization-core/src/opaque-value-redaction.ts"
+      ],
       "@openclaw/normalization-core/phone-presentation": [
         "./packages/normalization-core/src/phone-presentation.ts"
       ],
