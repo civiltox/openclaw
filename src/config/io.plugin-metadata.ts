@@ -5,7 +5,7 @@ import type { PluginMetadataSnapshotPluginIdScope } from "../plugins/plugin-meta
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 /** Merges validation metadata from every configured agent workspace. */
-export function mergeValidationPluginMetadataSnapshots(
+function mergeValidationPluginMetadataSnapshots(
   snapshots: readonly PluginMetadataSnapshot[],
 ): PluginMetadataSnapshot {
   const first = snapshots[0];
