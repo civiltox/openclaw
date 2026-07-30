@@ -158,6 +158,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -197,6 +198,14 @@ internal fun resolveInitialChatLoadSessionKey(
   if (current.isNotEmpty() && current != "main" && current != main) return null
   return main
 }
+
+/** Reserves a viewport strip so the jump-to-latest target never covers chat content. */
+internal fun chatReaderListBottomInset(showJumpToLatest: Boolean): Dp =
+  if (showJumpToLatest) {
+    56.dp
+  } else {
+    0.dp
+  }
 
 internal enum class ChatComposerTrailingAction {
   StartTalk,
@@ -1335,7 +1344,10 @@ private fun ChatMessageList(
 
   Box(modifier = modifier.fillMaxWidth()) {
     LazyColumn(
-      modifier = Modifier.fillMaxSize(),
+      modifier =
+        Modifier
+          .fillMaxSize()
+          .padding(bottom = chatReaderListBottomInset(readerScroll.showJumpToLatest)),
       state = readerScroll.listState,
       reverseLayout = true,
       verticalArrangement = Arrangement.spacedBy(5.dp),
