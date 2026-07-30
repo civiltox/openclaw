@@ -421,7 +421,8 @@ describe("fetchWithSsrFGuard hardening", () => {
     const globalFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (!proxyCaptureMocks.takeSuppressedInit(init)) {
         proxyCaptureMocks.captureHttpExchange({
-          url: String(input),
+          url:
+            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
           method: init?.method ?? "GET",
           requestHeaders: init?.headers,
           response: okResponse(),
