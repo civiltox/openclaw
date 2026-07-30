@@ -377,7 +377,30 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
       // and publish the durable replacement to the scheduler before returning.
       try {
         await ensureLoaded(state, { forceReload: true, skipRecompute: true });
-        prepareReloadedCronJobsForScheduling(state);
+        const scheduledReloadedJobs = prepareReloadedCronJobsForScheduling(state);
+        if (scheduledReloadedJobs && state.store) {
+          const repaired = await saveCronJobsStore(state.deps.storePath, state.store, {
+            stateOnly: true,
+            expectedStoreEpoch: state.storeEpoch,
+            expectedRuntimeRevision: state.runtimeRevision,
+            expectedRuntimeStateByJobId: state.durableRuntimeStateByJobId,
+            env: state.deps.env,
+          });
+          if (repaired) {
+            state.storeEpoch = repaired.storeEpoch;
+            state.runtimeRevision = repaired.runtimeRevision;
+            const repairedStore = repaired.runtimeMerged
+              ? mergeCommittedCronStoreIntoLive(state.store, repaired.store)
+              : state.store;
+            state.store = repairedStore;
+            state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(repaired.store.jobs);
+            publishDurableNextRunChanges({
+              state,
+              storeJobs: repairedStore.jobs,
+              stateOnly: true,
+            });
+          }
+        }
         // Keep this rare recovery edge lazy: timer-scheduler imports this store,
         // so an eager import here would create a module-initialization cycle.
         const { armTimerAfterStoreReload } = await import("./timer-arm.runtime.js");

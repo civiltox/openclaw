@@ -412,6 +412,35 @@ describe("cron service store seam coverage", () => {
     );
   });
 
+  it("persists missing wake times discovered during an epoch-conflict reload", async () => {
+    const { storePath } = await makeStorePath();
+    const existing = createReloadCronJob({
+      id: "existing",
+      state: { nextRunAtMs: STORE_TEST_NOW + 60_000 },
+    });
+    await writeSingleJobStore(storePath, existing);
+    const state = createStoreTestState(storePath);
+    await ensureLoaded(state, { skipRecompute: true });
+
+    await saveCronStore(
+      storePath,
+      {
+        version: 1,
+        jobs: [existing, createReloadCronJob({ id: "discovered", state: {} })],
+      },
+      { expectedStoreEpoch: state.storeEpoch },
+    );
+
+    await expect(persist(state)).rejects.toBeInstanceOf(CronStoreEpochMismatchError);
+    expect(state.store?.jobs.find((job) => job.id === "discovered")?.state.nextRunAtMs).toEqual(
+      expect.any(Number),
+    );
+    expect(
+      (await loadCronStore(storePath)).jobs.find((job) => job.id === "discovered")?.state
+        .nextRunAtMs,
+    ).toEqual(expect.any(Number));
+  });
+
   it("retains the stale-writer barrier after the newer epoch deletes its final job", async () => {
     const { storePath } = await makeStorePath();
     await writeSingleJobStore(storePath, createReloadCronJob({ id: "last-ownerless" }));
