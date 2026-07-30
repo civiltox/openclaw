@@ -20,7 +20,7 @@ function plugin(id: string, source: string): PluginManifestRecord {
 
 function snapshot(plugins: PluginManifestRecord[]): PluginMetadataSnapshot {
   return {
-    normalizePluginId: (pluginId) => pluginId.toLowerCase(),
+    normalizePluginId: (pluginId: string) => pluginId.toLowerCase(),
     plugins,
     diagnostics: [],
     manifestRegistry: { plugins, diagnostics: [] },
