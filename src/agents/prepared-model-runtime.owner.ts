@@ -8,6 +8,7 @@ import {
   resolveAgentWorkspaceDir,
   tryResolveSoleAgentId,
 } from "./agent-scope.js";
+import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 import {
   startSerializedSnapshotBuild,
   startSerializedSnapshotBuildBatch,
@@ -24,7 +25,6 @@ import type {
   PreparedModelRuntimeReplacement,
   PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.types.js";
-import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 
 export { startSerializedSnapshotBuildBatch };
 export type {
